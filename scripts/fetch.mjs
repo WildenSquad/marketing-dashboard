@@ -191,8 +191,14 @@ function postViews(metrics) {
   return views ?? impressions ?? 0;
 }
 
+/* Count fields Buffer contributes, tracked per channel as well as in total. */
+const BUFFER_COUNTS = ["views", "reach", "reactions", "comments", "shares", "reach_engagements"];
+
 export async function fetchBuffer(from, to) {
   const organizationId = env("BUFFER_ORG_ID");
+  /* date -> { instagram: {...}, facebook: {...}, ... }
+     Totals are derived from this at the end rather than accumulated
+     alongside it, so the two can never disagree. */
   const byDate = new Map();
   let after = null, page = 0;
 
@@ -227,8 +233,11 @@ export async function fetchBuffer(from, to) {
     for (const { node } of data.posts.edges ?? []) {
       if (!node.sentAt) continue;
       const date = node.sentAt.slice(0, 10);
+      const service = node.channelService ?? "unknown";
       if (!byDate.has(date)) byDate.set(date, {});
-      const bucket = byDate.get(date);
+      const day = byDate.get(date);
+      if (!day[service]) { day[service] = {}; for (const f of BUFFER_COUNTS) day[service][f] = 0; }
+      const bucket = day[service];
       const metrics = node.metrics ?? [];
 
       const add = (field, value) => { bucket[field] = (bucket[field] ?? 0) + value; };
@@ -260,7 +269,17 @@ export async function fetchBuffer(from, to) {
     if (++page > 50) throw new Error("Buffer pagination runaway — check the filter");
   } while (after);
 
-  return byDate; // Map<'YYYY-MM-DD', {views, reach, reactions, ...}>
+  /* Flatten to the row shape: per-channel detail under by_channel, plus the
+     top-level totals the data contract documents — summed from the same
+     numbers so a filtered view and the unfiltered view always reconcile. */
+  const out = new Map();
+  for (const [date, services] of byDate) {
+    const row = { by_channel: services };
+    for (const f of BUFFER_COUNTS)
+      row[f] = Object.values(services).reduce((a, s) => a + (s[f] ?? 0), 0);
+    out.set(date, row);
+  }
+  return out; // Map<'YYYY-MM-DD', {views, reach, ..., by_channel:{instagram:{...}}}>
 }
 
 /* ================================================================== *

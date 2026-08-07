@@ -61,6 +61,10 @@
     font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase;
     color:var(--muted); margin:0 0 8px;
   }
+  .grouphead{display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:8px}
+  .grouphead h2{margin:0}
+  .grouphead .seg button{font-size:12px; padding:3px 10px}
+  @media(max-width:640px){ .grouphead .seg{width:100%; overflow-x:auto} }
   .cards{display:grid; grid-template-columns:repeat(3,1fr); gap:10px}
   @media(max-width:720px){ .cards{grid-template-columns:1fr} }
   .card{
@@ -131,7 +135,16 @@
   </div>
 
   <div class="group">
-    <h2>Social &mdash; Buffer</h2>
+    <div class="grouphead">
+      <h2>Social &mdash; Buffer</h2>
+      <div class="seg" id="channelSeg" role="group" aria-label="Filter social stats by channel">
+        <button type="button" data-channel="all" aria-pressed="true">All</button>
+        <button type="button" data-channel="instagram">Instagram</button>
+        <button type="button" data-channel="facebook">Facebook</button>
+        <button type="button" data-channel="linkedin">LinkedIn</button>
+        <button type="button" data-channel="bluesky">Bluesky</button>
+      </div>
+    </div>
     <div class="cards" id="cards-social"></div>
   </div>
 
@@ -176,6 +189,14 @@
    reported reach. Facebook and Bluesky return engagement but no reach,
    so dividing all-channel engagements by two-channel reach overstates
    the rate by ~24%. This field is the denominator-matched numerator.
+
+   Rows also carry by_channel — the same six Buffer counts split per
+   network — which drives the channel filter:
+
+     "by_channel": { "instagram": {"views":0,"reach":0,...}, "facebook": {...} }
+
+   The top-level Buffer totals are summed FROM by_channel at fetch time,
+   so a filtered view and the unfiltered view always reconcile.
    ============================================================ */
 
 const COUNTS = ["views","reach","reactions","comments","shares","reach_engagements",
@@ -211,7 +232,19 @@ const METRICS = {
 };
 
 /* ---------- state ---------- */
-let ROWS = [], grain = "month", metric = "views";
+/* RAW is the file as loaded; ROWS is the view after the channel filter.
+   Everything downstream reads ROWS, so filtering is a single projection
+   rather than a condition threaded through every calculation. */
+let RAW = [], ROWS = [], grain = "month", metric = "views", channel = "all";
+
+/* Buffer's per-channel counts, and which follower level belongs to which
+   channel. LinkedIn has none — its follower count needs Marketing Developer
+   Platform approval, so filtering to LinkedIn correctly shows no level. */
+const CHANNEL_COUNTS = ["views","reach","reactions","comments","shares","reach_engagements"];
+const CHANNEL_FOLLOWERS = {
+  instagram:"followers_instagram", facebook:"followers_facebook",
+  bluesky:"followers_bluesky", linkedin:null,
+};
 const $ = id => document.getElementById(id);
 const num = v => v==null ? 0 : v;
 
@@ -225,6 +258,22 @@ const shift = (s, days) => { const d = parse(s); d.setUTCDate(d.getUTCDate()+day
 /* Sum one metric's field(s) from a bucket or row. */
 const fields = m => Array.isArray(m.num) ? m.num : [m.num];
 const sumOf = (o, m) => fields(m).reduce((a,f) => a + num(o[f]), 0);
+
+/* Rebuild ROWS for the selected channel. Website and newsletter fields are
+   copied untouched — the filter is scoped to social, as its placement in
+   that section implies. */
+function project(){
+  if (channel === "all"){ ROWS = RAW; return; }
+  const keep = CHANNEL_FOLLOWERS[channel];
+  ROWS = RAW.map(r => {
+    const c = r.by_channel?.[channel];
+    const o = {...r};
+    for (const f of CHANNEL_COUNTS) o[f] = c?.[f] ?? 0;
+    for (const f of ["followers_bluesky","followers_instagram","followers_facebook"])
+      if (f !== keep) o[f] = null;
+    return o;
+  });
+}
 
 /* Last known value of a level within a list of rows — nulls are gaps, not
    zeroes, so walk backwards to the most recent real reading. */
@@ -464,7 +513,8 @@ function shortNum(v){
 }
 function renderAll(){
   $("rangeLabel").textContent = `${$("from").value} → ${$("to").value} · ${
-    {day:"daily",week:"weekly",month:"monthly",year:"yearly"}[grain]}`;
+    {day:"daily",week:"weekly",month:"monthly",year:"yearly"}[grain]}` +
+    (channel === "all" ? "" : ` · social filtered to ${channel}`);
   renderCards(); renderChart();
 }
 
@@ -491,6 +541,13 @@ $("presetSeg").addEventListener("click", e => {
   [...$("presetSeg").children].forEach(x => x.setAttribute("aria-pressed","false"));
   renderAll();
 }));
+$("channelSeg").addEventListener("click", e => {
+  const b = e.target.closest("button"); if(!b) return;
+  channel = b.dataset.channel;
+  [...$("channelSeg").children].forEach(x => x.setAttribute("aria-pressed", x===b));
+  project();
+  renderAll();
+});
 $("themeBtn").addEventListener("click", () => {
   const dark = document.documentElement.dataset.theme === "dark";
   document.documentElement.dataset.theme = dark ? "light" : "dark";
@@ -526,7 +583,8 @@ function showMessage(title, body){
     return;
   }
 
-  ROWS = live.slice().sort((a,b)=> a.date < b.date ? -1 : 1);
+  RAW = live.slice().sort((a,b)=> a.date < b.date ? -1 : 1);
+  project();
   const last = ROWS[ROWS.length-1].date;
 
   $("from").min = $("to").min = ROWS[0].date;
