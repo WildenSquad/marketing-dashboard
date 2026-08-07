@@ -209,11 +209,15 @@ const METRICS = {
   engagement:  {label:"Engagement rate",    group:"social", kind:"ratio", fmt:"pct", color:"--s1", num:"reach_engagements", den:"reach",
                 zero:"No reach recorded in this range",
                 note:"Engagements ÷ reach, both counted only from Instagram and LinkedIn. Facebook and Bluesky report engagement but not reach, so including them would inflate this."},
-  followers:   {label:"Follower growth",    group:"social", kind:"stock", fmt:"int", color:"--s1",
+  /* Headline is the follower count as it stood at the end of the range;
+     growth over that range is the indicator beneath it. */
+  followers:   {label:"Followers",          group:"social", kind:"level", fmt:"int", color:"--s1",
                 num:["followers_bluesky","followers_instagram","followers_facebook"],
-                note:"Bluesky, Instagram and Facebook. LinkedIn is excluded — its follower count needs Marketing Developer Platform approval. Networks are summed only where both ends of the range are known, so adding a network later doesn't register as a spike in growth."},
+                growth:true,
+                zero:"Not yet recorded for this channel",
+                note:"Bluesky, Instagram and Facebook. LinkedIn is excluded — its follower count needs Marketing Developer Platform approval. Networks are summed only where both ends of the range are known, so connecting a network later doesn't register as a spike in growth."},
   reach:       {label:"Reach",              group:"social", kind:"sum",   fmt:"int", color:"--s1", num:"reach", chartOnly:true},
-  followerlvl: {label:"Followers (total)",  group:"social", kind:"level",  fmt:"int", color:"--s1",
+  followergrowth:{label:"Follower growth",  group:"social", kind:"stock", fmt:"int", color:"--s1",
                 num:["followers_bluesky","followers_instagram","followers_facebook"], chartOnly:true},
   engagements: {label:"Engagements",        group:"social", kind:"sum",   fmt:"int", color:"--s1", num:["reactions","comments","shares"], chartOnly:true},
 
@@ -413,6 +417,17 @@ function deltaHTML(cur, prev, key){
   const cls = pc >= 0 ? "up" : "down";
   return `<b class="${cls}">${pc>=0?"+":""}${pc.toFixed(1)}%</b> vs prior period`;
 }
+/* Movement in the level across the selected range, for cards whose headline
+   is the level itself. Summed per network and only where both ends are
+   known — same rule as the stock metrics. */
+function growthHTML(rows, key){
+  if (!rows.length) return `<span>no readings in this range</span>`;
+  const m = METRICS[key];
+  const g = sumGrowth(f => levelBefore(rows[0].date, f), f => lastLevel(rows, f), m);
+  if (g == null) return `<span>no earlier reading to compare against</span>`;
+  const cls = g >= 0 ? "up" : "down";
+  return `<b class="${cls}">${g >= 0 ? "+" : "−"}${fmtInt(Math.abs(g))}</b> over this range`;
+}
 function renderCards(){
   const cur = selectedRows(), prev = priorRows();
   const box = {social:$("cards-social"), web:$("cards-web"), email:$("cards-email")};
@@ -425,10 +440,13 @@ function renderCards(){
     const el = document.createElement("div");
     el.className = "card";
     const sign = m.kind === "stock" && c > 0 ? "+" : "";
+    const indicator = !basis ? `<span>${m.zero || "Not recorded in this range"}</span>`
+      : m.growth ? growthHTML(cur, key)
+      : deltaHTML(c, p, key);
     el.innerHTML =
       `<div class="label"><span class="dot" style="background:var(${m.color})"></span>${m.label}</div>
        <div class="value">${sign}${fmtVal(c,key)}</div>
-       <div class="delta">${basis ? deltaHTML(c,p,key) : `<span>${m.zero || "Not recorded in this range"}</span>`}</div>
+       <div class="delta">${indicator}</div>
        ${m.note ? `<div class="note">${m.note}</div>` : ""}`;
     box[m.group].appendChild(el);
   }
