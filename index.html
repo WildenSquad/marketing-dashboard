@@ -73,6 +73,16 @@
   .card .delta{font-size:12px; margin-top:2px; color:var(--muted); font-variant-numeric:tabular-nums}
   .delta b{font-weight:500}
   .up{color:var(--up)} .down{color:var(--down)}
+  .card .note{font-size:11px; color:var(--muted); margin-top:7px; line-height:1.4;
+    padding-top:7px; border-top:1px solid var(--line)}
+
+  .banner{border:1px solid var(--line); border-radius:var(--radius); padding:22px 20px;
+    background:var(--panel); color:var(--muted); font-size:13px; line-height:1.6}
+  .banner b{color:var(--text); font-weight:600; display:block; margin-bottom:6px; font-size:15px}
+  .banner code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px;
+    background:var(--chip); padding:1px 5px; border-radius:3px}
+  .stale{color:var(--down)}
+  input[type=date]:focus-visible, .ghost:focus-visible{outline:2px solid var(--s1); outline-offset:1px}
 
   .chartbox{border:1px solid var(--line); border-radius:var(--radius); padding:14px; background:var(--panel)}
   .chips{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px}
@@ -146,107 +156,158 @@
 <script>
 /* ============================================================
    DATA CONTRACT — one row per day, raw counts only (never rates).
-   Rates are derived at read time so they stay correct at every
-   aggregation level. Drop a data.json next to this file with the
-   same shape and it replaces the sample data automatically.
 
-   { "date":"2026-07-28",
-     "impressions":0, "engagements":0, "followers":0,
+   Rates are derived here, at read time, from summed counts. That is
+   the whole point: averaging seven daily open rates does not give the
+   weekly open rate. sum(opened)/sum(delivered) does.
+
+   { "date":"2026-07-30",
+     "views":0, "reach":0, "reactions":0, "comments":0, "shares":0,
+     "reach_engagements":0,
      "sessions":0, "pageviews":0, "conversions":0,
-     "subscribers":0, "emails_delivered":0, "emails_opened":0, "emails_clicked":0 }
+     "followers":null, "subscribers":null,
+     "emails_delivered":0, "emails_opened":0, "emails_clicked":0 }
 
-   followers / subscribers are point-in-time snapshots (end of day).
-   Everything else is a count for that day. Missing days are fine.
+   followers / subscribers are end-of-day snapshots (levels) and may be
+   null, meaning "not known on this day" — which is NOT zero. Everything
+   else is a count for that day.
+
+   reach_engagements is engagements counted only from channels that also
+   reported reach. Facebook and Bluesky return engagement but no reach,
+   so dividing all-channel engagements by two-channel reach overstates
+   the rate by ~24%. This field is the denominator-matched numerator.
    ============================================================ */
 
+const COUNTS = ["views","reach","reactions","comments","shares","reach_engagements",
+  "sessions","pageviews","conversions","emails_delivered","emails_opened","emails_clicked"];
+const LEVELS = ["followers","subscribers"];
+
 const METRICS = {
-  impressions:   {label:"Impressions",      group:"social", kind:"sum",   fmt:"int",  color:"--s1", num:"impressions"},
-  engagement:    {label:"Engagement rate",  group:"social", kind:"ratio", fmt:"pct",  color:"--s1", num:"engagements", den:"impressions"},
-  followers:     {label:"Follower growth",  group:"social", kind:"stock", fmt:"int",  color:"--s1", num:"followers"},
-  sessions:      {label:"Sessions",         group:"web",    kind:"sum",   fmt:"int",  color:"--s2", num:"sessions"},
-  pageviews:     {label:"Pageviews",        group:"web",    kind:"sum",   fmt:"int",  color:"--s2", num:"pageviews"},
-  conversion:    {label:"Conversion rate",  group:"web",    kind:"ratio", fmt:"pct",  color:"--s2", num:"conversions", den:"sessions"},
-  subscribers:   {label:"Subscribers",      group:"email",  kind:"level", fmt:"int",  color:"--s3", num:"subscribers"},
-  openrate:      {label:"Open rate",        group:"email",  kind:"ratio", fmt:"pct",  color:"--s3", num:"emails_opened",  den:"emails_delivered"},
-  ctr:           {label:"Click-through rate",group:"email", kind:"ratio", fmt:"pct",  color:"--s3", num:"emails_clicked", den:"emails_delivered"}
+  views:       {label:"Views",              group:"social", kind:"sum",   fmt:"int", color:"--s1", num:"views",
+                note:"Meta folded impressions, Reel plays and Story impressions into a single Views metric. LinkedIn and Facebook still report impressions; those are the same thing and are counted here."},
+  engagement:  {label:"Engagement rate",    group:"social", kind:"ratio", fmt:"pct", color:"--s1", num:"reach_engagements", den:"reach",
+                zero:"No reach recorded in this range",
+                note:"Engagements ÷ reach, both counted only from Instagram and LinkedIn. Facebook and Bluesky report engagement but not reach, so including them would inflate this."},
+  followers:   {label:"Follower growth",    group:"social", kind:"stock", fmt:"int", color:"--s1", num:"followers",
+                note:"Bluesky only — Buffer exposes no follower count for Instagram, Facebook or LinkedIn. There is no historical series, so this fills in from the day tracking started."},
+  reach:       {label:"Reach",              group:"social", kind:"sum",   fmt:"int", color:"--s1", num:"reach", chartOnly:true},
+  engagements: {label:"Engagements",        group:"social", kind:"sum",   fmt:"int", color:"--s1", num:["reactions","comments","shares"], chartOnly:true},
+
+  sessions:    {label:"Sessions",           group:"web",    kind:"sum",   fmt:"int", color:"--s2", num:"sessions"},
+  pageviews:   {label:"Pageviews",          group:"web",    kind:"sum",   fmt:"int", color:"--s2", num:"pageviews"},
+  conversion:  {label:"Conversion rate",    group:"web",    kind:"ratio", fmt:"pct", color:"--s2", num:"conversions", den:"sessions",
+                zero:"No sessions in this range",
+                note:"GA4 key events (the metric formerly called conversions). Reads 0% until an event is marked as a key event in GA4."},
+
+  subscribers: {label:"Subscribers",        group:"email",  kind:"level", fmt:"int", color:"--s3", num:"subscribers",
+                note:"Mailchimp reports only a current total. Its daily subs/unsubs deltas don't reconcile with it, so history starts the day tracking began rather than being reconstructed."},
+  openrate:    {label:"Open rate",          group:"email",  kind:"ratio", fmt:"pct", color:"--s3", num:"emails_opened",  den:"emails_delivered",
+                zero:"No sends in this range"},
+  ctr:         {label:"Click-through rate", group:"email",  kind:"ratio", fmt:"pct", color:"--s3", num:"emails_clicked", den:"emails_delivered",
+                zero:"No sends in this range"}
 };
 
-/* ---------- sample data (deterministic) ---------- */
-function sampleData(){
-  let s = 12345; const rnd = () => (s = (s*1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
-  const out = [], end = new Date(), start = new Date(end); start.setDate(start.getDate() - 700);
-  let followers = 2400, subs = 860;
-  for (let d = new Date(start), i = 0; d <= end; d.setDate(d.getDate()+1), i++){
-    const dow = d.getDay(), wk = (dow===0||dow===6) ? .72 : 1, trend = 1 + i/900;
-    const imp = Math.round((1800 + rnd()*900) * wk * trend);
-    const eng = Math.round(imp * (0.031 + rnd()*0.022));
-    followers += Math.round((rnd()*9) - 1.4 + i/260);
-    const sess = Math.round((240 + rnd()*160) * wk * trend);
-    const pv   = Math.round(sess * (1.9 + rnd()*0.9));
-    const conv = Math.round(sess * (0.018 + rnd()*0.017));
-    const send = (dow === 2);
-    const del  = send ? subs - Math.round(rnd()*12) : 0;
-    const op   = send ? Math.round(del * (0.38 + rnd()*0.14)) : 0;
-    const cl   = send ? Math.round(op  * (0.09 + rnd()*0.09)) : 0;
-    subs += Math.round(rnd()*7) - 1 + Math.round(i/380);
-    out.push({date:d.toISOString().slice(0,10), impressions:imp, engagements:eng, followers,
-      sessions:sess, pageviews:pv, conversions:conv,
-      subscribers:subs, emails_delivered:del, emails_opened:op, emails_clicked:cl});
-  }
-  return out;
-}
-
 /* ---------- state ---------- */
-let ROWS = [], grain = "month", metric = "impressions";
+let ROWS = [], grain = "month", metric = "views";
 const $ = id => document.getElementById(id);
-const iso = d => d.toISOString().slice(0,10);
 const num = v => v==null ? 0 : v;
+
+/* Dates are UTC throughout. Parsing 'YYYY-MM-DD' as local time and then
+   re-serialising via toISOString() shifts the day backwards for any viewer
+   east of UTC, which silently misfiles rows into the wrong week or month. */
+const parse = s => new Date(s + "T00:00:00Z");
+const iso = d => d.toISOString().slice(0,10);
+const shift = (s, days) => { const d = parse(s); d.setUTCDate(d.getUTCDate()+days); return iso(d); };
+
+/* Sum one metric's field(s) from a bucket or row. */
+const fields = m => Array.isArray(m.num) ? m.num : [m.num];
+const sumOf = (o, m) => fields(m).reduce((a,f) => a + num(o[f]), 0);
+
+/* Last known value of a level within a list of rows — nulls are gaps, not
+   zeroes, so walk backwards to the most recent real reading. */
+function lastLevel(rows, field){
+  for (let i = rows.length-1; i >= 0; i--) if (rows[i][field] != null) return rows[i][field];
+  return null;
+}
+/* Last known value strictly before a date, across the whole dataset. Growth
+   over a range is measured against the level as it stood going in. */
+function levelBefore(dateStr, field){
+  for (let i = ROWS.length-1; i >= 0; i--)
+    if (ROWS[i].date < dateStr && ROWS[i][field] != null) return ROWS[i][field];
+  return null;
+}
 
 /* ---------- bucketing ---------- */
 function bucketKey(dateStr){
-  const d = new Date(dateStr + "T00:00:00");
   if (grain === "day")   return dateStr;
   if (grain === "year")  return dateStr.slice(0,4);
   if (grain === "month") return dateStr.slice(0,7);
-  const t = new Date(d); t.setDate(t.getDate() - ((t.getDay()+6) % 7)); // ISO week start (Mon)
-  return iso(t);
+  const d = parse(dateStr);                                  // ISO week: Monday start
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay()+6) % 7));
+  return iso(d);
 }
 function bucketLabel(key){
   if (grain === "year")  return key;
-  if (grain === "month") return new Date(key+"-01T00:00:00").toLocaleDateString(undefined,{month:"short",year:"2-digit"});
-  const d = new Date(key+"T00:00:00");
-  return d.toLocaleDateString(undefined,{month:"short",day:"numeric"});
+  const opts = grain === "month" ? {month:"short", year:"2-digit"} : {month:"short", day:"numeric"};
+  const d = parse(grain === "month" ? key + "-01" : key);
+  return d.toLocaleDateString(undefined, {...opts, timeZone:"UTC"});
 }
 function aggregate(rows){
   const map = new Map();
   for (const r of rows){
     const k = bucketKey(r.date);
     let b = map.get(k);
-    if (!b){ b = {key:k, first:r, last:r}; map.set(k,b); }
-    b.last = r;
-    for (const f of ["impressions","engagements","sessions","pageviews","conversions",
-                     "emails_delivered","emails_opened","emails_clicked"]) b[f] = num(b[f]) + num(r[f]);
+    if (!b){ b = {key:k, rows:[]}; for (const f of COUNTS) b[f] = 0; map.set(k,b); }
+    b.rows.push(r);
+    for (const f of COUNTS) b[f] += num(r[f]);
   }
   const list = [...map.values()].sort((a,b)=> a.key < b.key ? -1 : 1);
-  // growth is measured from the previous bucket's closing value
-  list.forEach((b,i) => b.base = i ? list[i-1].last : b.first);
+
+  /* Levels close each bucket at their last known reading and carry forward
+     across empty buckets. Growth is that close minus the previous bucket's
+     close — never minus zero, which is what a null would collapse to. */
+  const carry = {};
+  for (const f of LEVELS) carry[f] = list.length ? levelBefore(list[0].rows[0].date, f) : null;
+  for (const b of list){
+    b.base = {...carry};
+    b.level = {};
+    for (const f of LEVELS){
+      const v = lastLevel(b.rows, f);
+      if (v != null) carry[f] = v;
+      b.level[f] = carry[f];
+    }
+  }
   return list;
 }
 function readMetric(b, key){
   const m = METRICS[key];
-  if (m.kind === "ratio") return b[m.den] ? b[m.num] / b[m.den] : null;
-  if (m.kind === "level") return num(b.last[m.num]);
-  if (m.kind === "stock") return num(b.last[m.num]) - num(b.base[m.num]);
-  return num(b[m.num]);
+  if (m.kind === "ratio") return b[m.den] ? sumOf(b, m) / b[m.den] : null;
+  if (m.kind === "level") return b.level[m.num];
+  if (m.kind === "stock"){
+    const a = b.base[m.num], z = b.level[m.num];
+    return (a == null || z == null) ? null : z - a;
+  }
+  return sumOf(b, m);
 }
-/* total across an arbitrary set of rows, using the same semantics */
+/* Total across an arbitrary set of rows, using the same semantics. */
 function totalMetric(rows, key){
   if (!rows.length) return null;
   const m = METRICS[key], sum = f => rows.reduce((a,r)=> a + num(r[f]), 0);
-  if (m.kind === "ratio") { const d = sum(m.den); return d ? sum(m.num)/d : null; }
-  if (m.kind === "level") return num(rows[rows.length-1][m.num]);
-  if (m.kind === "stock") return num(rows[rows.length-1][m.num]) - num(rows[0][m.num]);
-  return sum(m.num);
+  if (m.kind === "ratio"){ const d = sum(m.den); return d ? fields(m).reduce((a,f)=>a+sum(f),0)/d : null; }
+  if (m.kind === "level") return lastLevel(rows, m.num);
+  if (m.kind === "stock"){
+    const a = levelBefore(rows[0].date, m.num), z = lastLevel(rows, m.num);
+    return (a == null || z == null) ? null : z - a;
+  }
+  return fields(m).reduce((a,f) => a + sum(f), 0);
+}
+/* Did this metric have anything to work with at all in this range? Used to
+   tell "genuinely zero" apart from "nothing to measure". */
+function hasBasis(rows, key){
+  const m = METRICS[key];
+  if (m.kind === "ratio") return rows.reduce((a,r)=> a + num(r[m.den]), 0) > 0;
+  if (m.kind === "level" || m.kind === "stock") return lastLevel(rows, m.num) != null;
+  return true;
 }
 
 /* ---------- formatting ---------- */
@@ -259,21 +320,24 @@ function selectedRows(){
   const a = $("from").value, b = $("to").value;
   return ROWS.filter(r => r.date >= a && r.date <= b);
 }
+/* The immediately preceding period of equal length. */
 function priorRows(){
-  const a = new Date($("from").value+"T00:00:00"), b = new Date($("to").value+"T00:00:00");
-  const days = Math.round((b-a)/864e5) + 1;
-  const pb = new Date(a); pb.setDate(pb.getDate()-1);
-  const pa = new Date(pb); pa.setDate(pa.getDate()-days+1);
-  return ROWS.filter(r => r.date >= iso(pa) && r.date <= iso(pb));
+  const a = $("from").value, b = $("to").value;
+  const days = Math.round((parse(b) - parse(a)) / 864e5) + 1;
+  const pb = shift(a, -1), pa = shift(pb, -(days-1));
+  return ROWS.filter(r => r.date >= pa && r.date <= pb);
 }
 function deltaHTML(cur, prev, key){
-  if (cur==null || prev==null || prev===0) return `<span>no prior period</span>`;
+  if (cur == null || prev == null) return `<span>no comparable prior period</span>`;
   const m = METRICS[key];
   if (m.fmt === "pct"){
+    // Percentage-POINT change: the difference between two percentages is not
+    // itself a percentage change.
     const pts = (cur - prev) * 100;
     const cls = pts >= 0 ? "up" : "down";
     return `<b class="${cls}">${pts>=0?"+":""}${pts.toFixed(2)} pts</b> vs prior period`;
   }
+  if (prev === 0) return `<span>no prior-period baseline</span>`;
   const pc = ((cur - prev) / Math.abs(prev)) * 100;
   const cls = pc >= 0 ? "up" : "down";
   return `<b class="${cls}">${pc>=0?"+":""}${pc.toFixed(1)}%</b> vs prior period`;
@@ -283,12 +347,18 @@ function renderCards(){
   const box = {social:$("cards-social"), web:$("cards-web"), email:$("cards-email")};
   Object.values(box).forEach(el => el.innerHTML = "");
   for (const [key,m] of Object.entries(METRICS)){
-    const c = totalMetric(cur,key), p = totalMetric(prev,key);
+    if (m.chartOnly) continue;
+    const basis = hasBasis(cur, key);
+    const c = basis ? totalMetric(cur, key) : null;
+    const p = hasBasis(prev, key) ? totalMetric(prev, key) : null;
     const el = document.createElement("div");
     el.className = "card";
-    el.innerHTML = `<div class="label"><span class="dot" style="background:var(${m.color})"></span>${m.label}</div>
-      <div class="value">${m.kind==="stock" && c>0 ? "+" : ""}${fmtVal(c,key)}</div>
-      <div class="delta">${deltaHTML(c,p,key)}</div>`;
+    const sign = m.kind === "stock" && c > 0 ? "+" : "";
+    el.innerHTML =
+      `<div class="label"><span class="dot" style="background:var(${m.color})"></span>${m.label}</div>
+       <div class="value">${sign}${fmtVal(c,key)}</div>
+       <div class="delta">${basis ? deltaHTML(c,p,key) : `<span>${m.zero || "Not recorded in this range"}</span>`}</div>
+       ${m.note ? `<div class="note">${m.note}</div>` : ""}`;
     box[m.group].appendChild(el);
   }
 }
@@ -309,6 +379,10 @@ function renderChart(){
   const m = METRICS[metric];
   const vals = buckets.map(b => readMetric(b, metric));
   const shown = vals.filter(v => v != null);
+  if (!shown.length){
+    host.innerHTML = `<div class="empty">${m.zero || "No " + m.label.toLowerCase() + " recorded in this range."}</div>`;
+    return;
+  }
   const asBars = (m.kind === "sum" || m.kind === "stock");
 
   const W = 900, H = 320, L = 56, R = 12, T = 14, B = 34;
@@ -341,9 +415,16 @@ function renderChart(){
         <title>${bucketLabel(b.key)} · ${fmtVal(v,metric)}</title></rect>`;
     }).join("");
   } else {
-    const pts = buckets.map((b,i)=> vals[i]==null ? null : [cx(i), y(vals[i])]).filter(Boolean);
-    const d = pts.map((p,i)=> (i?"L":"M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
-    series = `<path d="${d}" fill="none" stroke="var(${m.color})" stroke-width="2"
+    // Break the line at gaps instead of interpolating across them — a
+    // straight run between two known points would invent readings that
+    // were never taken.
+    let d = "", pen = false;
+    buckets.forEach((b,i) => {
+      if (vals[i] == null){ pen = false; return; }
+      d += `${pen ? "L" : "M"}${cx(i).toFixed(1)} ${y(vals[i]).toFixed(1)} `;
+      pen = true;
+    });
+    series = `<path d="${d.trim()}" fill="none" stroke="var(${m.color})" stroke-width="2"
       stroke-linejoin="round" stroke-linecap="round"/>` +
       buckets.map((b,i)=> vals[i]==null ? "" :
         `<circle class="pt" cx="${cx(i).toFixed(1)}" cy="${y(vals[i]).toFixed(1)}" r="${n>60?1.6:3}"
@@ -377,7 +458,10 @@ $("presetSeg").addEventListener("click", e => {
   [...$("presetSeg").children].forEach(x => x.setAttribute("aria-pressed", x===b));
   const last = ROWS[ROWS.length-1].date;
   if (b.dataset.preset === "all"){ $("from").value = ROWS[0].date; }
-  else { const d = new Date(last+"T00:00:00"); d.setDate(d.getDate() - (+b.dataset.preset - 1)); $("from").value = iso(d); }
+  else {
+    const start = shift(last, -(+b.dataset.preset - 1));
+    $("from").value = start < ROWS[0].date ? ROWS[0].date : start;
+  }
   $("to").value = last;
   renderAll();
 });
@@ -393,21 +477,47 @@ $("themeBtn").addEventListener("click", () => {
 });
 
 /* ---------- boot ---------- */
+function showMessage(title, body){
+  document.querySelector(".controls").hidden = true;
+  for (const id of ["cards-social","cards-web","cards-email"]) $(id).closest(".group").hidden = true;
+  document.querySelector(".chartbox").innerHTML =
+    `<div class="banner"><b>${title}</b>${body}</div>`;
+  $("foot").textContent = "";
+}
+
 (async function init(){
   const prefersDark = matchMedia("(prefers-color-scheme: dark)").matches;
   document.documentElement.dataset.theme = prefersDark ? "dark" : "light";
   $("themeBtn").textContent = prefersDark ? "Light" : "Dark";
 
-  let live = null;
-  try { const r = await fetch("./data.json", {cache:"no-store"}); if (r.ok) live = await r.json(); } catch(e){}
-  ROWS = (Array.isArray(live) && live.length ? live : sampleData()).slice().sort((a,b)=> a.date < b.date ? -1 : 1);
-  $("foot").textContent = live ? `${ROWS.length} days loaded from data.json` : `Sample data — replace with data.json to go live`;
+  let live = null, failed = null;
+  try {
+    const r = await fetch("./data.json", {cache:"no-store"});
+    if (r.ok) live = await r.json(); else failed = `The server returned ${r.status}.`;
+  } catch (e){ failed = "The file could not be loaded."; }
+
+  if (!Array.isArray(live) || !live.length){
+    showMessage("No data yet",
+      `<code>data.json</code> is missing, empty, or not an array. ${failed || ""}
+       The nightly job writes it — check the Actions tab for a failed run, or trigger
+       <em>Refresh dashboard data</em> manually.`);
+    return;
+  }
+
+  ROWS = live.slice().sort((a,b)=> a.date < b.date ? -1 : 1);
+  const last = ROWS[ROWS.length-1].date;
 
   $("from").min = $("to").min = ROWS[0].date;
-  $("from").max = $("to").max = ROWS[ROWS.length-1].date;
-  $("to").value = ROWS[ROWS.length-1].date;
-  const d = new Date($("to").value+"T00:00:00"); d.setDate(d.getDate()-364);
-  $("from").value = iso(d) < ROWS[0].date ? ROWS[0].date : iso(d);
+  $("from").max = $("to").max = last;
+  $("to").value = last;
+  const start = shift(last, -364);
+  $("from").value = start < ROWS[0].date ? ROWS[0].date : start;
+
+  // Flag stale data rather than presenting it as current. The job drifts by
+  // design, so allow two days before saying anything.
+  const behind = Math.round((Date.now() - parse(last)) / 864e5);
+  $("foot").innerHTML = `${ROWS.length.toLocaleString()} days · ${ROWS[0].date} to ${last}` +
+    (behind > 2 ? ` · <span class="stale">last refresh was ${behind} days ago</span>` : "");
 
   renderChips(); renderAll();
 })();
