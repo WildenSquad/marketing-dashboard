@@ -1,0 +1,13 @@
+# Secrets — never commit these.
+.env
+.env.*
+!.env.example
+*.pem
+*-service-account*.json
+gcp-key*.json
+
+# Local scratch
+node_modules/
+*.log
+tmp/
+fetch.log

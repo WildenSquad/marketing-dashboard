@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Marketing performance</title>
+<style>
+  :root{
+    --bg:#ffffff; --panel:#ffffff; --text:#37352f; --muted:#787774;
+    --line:rgba(55,53,47,.09); --line-strong:rgba(55,53,47,.16);
+    --chip:rgba(55,53,47,.04); --chip-on:rgba(55,53,47,.08);
+    --up:#448361; --down:#c4554d;
+    --s1:#337ea9; --s2:#9065b0; --s3:#cb912f;
+    --radius:6px;
+  }
+  html[data-theme="dark"]{
+    --bg:#191919; --panel:#202020; --text:#d4d4d4; --muted:#9b9b9b;
+    --line:rgba(255,255,255,.09); --line-strong:rgba(255,255,255,.16);
+    --chip:rgba(255,255,255,.055); --chip-on:rgba(255,255,255,.11);
+    --up:#4dab9a; --down:#df5452;
+    --s1:#529cca; --s2:#9a6dd7; --s3:#ca9849;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif;
+    font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1080px; margin:0 auto; padding:24px 32px 48px}
+  @media(max-width:640px){ .wrap{padding:16px} }
+
+  header{display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:18px}
+  h1{font-size:20px; font-weight:600; letter-spacing:-.01em; margin:0}
+  .sub{color:var(--muted); font-size:13px}
+  .spacer{flex:1}
+
+  .controls{display:flex; gap:16px; flex-wrap:wrap; align-items:center;
+    padding:10px 0 14px; border-bottom:1px solid var(--line); margin-bottom:22px}
+  .seg{display:inline-flex; background:var(--chip); border-radius:var(--radius); padding:2px}
+  .seg button{
+    appearance:none; border:0; background:transparent; color:var(--muted);
+    font:inherit; font-size:13px; padding:4px 12px; border-radius:4px; cursor:pointer;
+  }
+  .seg button[aria-pressed="true"]{background:var(--panel); color:var(--text); font-weight:500;
+    box-shadow:0 1px 2px rgba(15,15,15,.12)}
+  html[data-theme="dark"] .seg button[aria-pressed="true"]{box-shadow:0 0 0 1px var(--line-strong)}
+  .seg button:focus-visible{outline:2px solid var(--s1); outline-offset:1px}
+
+  .dates{display:flex; align-items:center; gap:6px; font-size:13px; color:var(--muted)}
+  input[type=date]{
+    font:inherit; font-size:13px; color:var(--text); background:var(--chip);
+    border:1px solid transparent; border-radius:var(--radius); padding:4px 8px;
+  }
+  input[type=date]:hover{border-color:var(--line-strong)}
+  .ghost{appearance:none; border:1px solid var(--line-strong); background:transparent;
+    color:var(--muted); font:inherit; font-size:12px; padding:4px 10px; border-radius:var(--radius); cursor:pointer}
+  .ghost:hover{color:var(--text)}
+
+  .group{margin-bottom:26px}
+  .group h2{
+    font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase;
+    color:var(--muted); margin:0 0 8px;
+  }
+  .cards{display:grid; grid-template-columns:repeat(3,1fr); gap:10px}
+  @media(max-width:720px){ .cards{grid-template-columns:1fr} }
+  .card{
+    border:1px solid var(--line); border-radius:var(--radius); padding:12px 14px; background:var(--panel);
+  }
+  .card .label{font-size:12px; color:var(--muted); display:flex; align-items:center; gap:6px}
+  .dot{width:7px; height:7px; border-radius:50%; flex:none}
+  .card .value{font-size:24px; font-weight:600; letter-spacing:-.02em; margin-top:4px;
+    font-variant-numeric:tabular-nums}
+  .card .delta{font-size:12px; margin-top:2px; color:var(--muted); font-variant-numeric:tabular-nums}
+  .delta b{font-weight:500}
+  .up{color:var(--up)} .down{color:var(--down)}
+
+  .chartbox{border:1px solid var(--line); border-radius:var(--radius); padding:14px; background:var(--panel)}
+  .chips{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px}
+  .chip{
+    appearance:none; border:1px solid var(--line); background:transparent; color:var(--muted);
+    font:inherit; font-size:12px; padding:3px 10px; border-radius:20px; cursor:pointer;
+  }
+  .chip[aria-pressed="true"]{background:var(--chip-on); color:var(--text); border-color:transparent}
+  .chip:focus-visible{outline:2px solid var(--s1); outline-offset:1px}
+  svg{display:block; width:100%; height:auto}
+  .axis{fill:var(--muted); font-size:11px}
+  .grid{stroke:var(--line)}
+  .empty{color:var(--muted); font-size:13px; padding:40px 0; text-align:center}
+  footer{margin-top:18px; font-size:12px; color:var(--muted)}
+  @media (prefers-reduced-motion:no-preference){ .bar,.pt{transition:opacity .12s} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Marketing performance</h1>
+    <span class="sub" id="rangeLabel"></span>
+    <span class="spacer"></span>
+    <button class="ghost" id="themeBtn" type="button">Dark</button>
+  </header>
+
+  <div class="controls">
+    <div class="seg" id="grainSeg" role="group" aria-label="Aggregation">
+      <button type="button" data-grain="day">Daily</button>
+      <button type="button" data-grain="week">Weekly</button>
+      <button type="button" data-grain="month" aria-pressed="true">Monthly</button>
+      <button type="button" data-grain="year">Yearly</button>
+    </div>
+    <div class="dates">
+      <input type="date" id="from" aria-label="Start date">
+      <span>to</span>
+      <input type="date" id="to" aria-label="End date">
+    </div>
+    <div class="seg" id="presetSeg" role="group" aria-label="Quick ranges">
+      <button type="button" data-preset="30">30d</button>
+      <button type="button" data-preset="90">90d</button>
+      <button type="button" data-preset="365">12mo</button>
+      <button type="button" data-preset="all">All</button>
+    </div>
+  </div>
+
+  <div class="group">
+    <h2>Social &mdash; Buffer</h2>
+    <div class="cards" id="cards-social"></div>
+  </div>
+
+  <div class="group">
+    <h2>Website &mdash; Google Analytics</h2>
+    <div class="cards" id="cards-web"></div>
+  </div>
+
+  <div class="group">
+    <h2>Newsletter</h2>
+    <div class="cards" id="cards-email"></div>
+  </div>
+
+  <div class="chartbox">
+    <div class="chips" id="chips"></div>
+    <div id="chart"></div>
+  </div>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+/* ============================================================
+   DATA CONTRACT — one row per day, raw counts only (never rates).
+   Rates are derived at read time so they stay correct at every
+   aggregation level. Drop a data.json next to this file with the
+   same shape and it replaces the sample data automatically.
+
+   { "date":"2026-07-28",
+     "impressions":0, "engagements":0, "followers":0,
+     "sessions":0, "pageviews":0, "conversions":0,
+     "subscribers":0, "emails_delivered":0, "emails_opened":0, "emails_clicked":0 }
+
+   followers / subscribers are point-in-time snapshots (end of day).
+   Everything else is a count for that day. Missing days are fine.
+   ============================================================ */
+
+const METRICS = {
+  impressions:   {label:"Impressions",      group:"social", kind:"sum",   fmt:"int",  color:"--s1", num:"impressions"},
+  engagement:    {label:"Engagement rate",  group:"social", kind:"ratio", fmt:"pct",  color:"--s1", num:"engagements", den:"impressions"},
+  followers:     {label:"Follower growth",  group:"social", kind:"stock", fmt:"int",  color:"--s1", num:"followers"},
+  sessions:      {label:"Sessions",         group:"web",    kind:"sum",   fmt:"int",  color:"--s2", num:"sessions"},
+  pageviews:     {label:"Pageviews",        group:"web",    kind:"sum",   fmt:"int",  color:"--s2", num:"pageviews"},
+  conversion:    {label:"Conversion rate",  group:"web",    kind:"ratio", fmt:"pct",  color:"--s2", num:"conversions", den:"sessions"},
+  subscribers:   {label:"Subscribers",      group:"email",  kind:"level", fmt:"int",  color:"--s3", num:"subscribers"},
+  openrate:      {label:"Open rate",        group:"email",  kind:"ratio", fmt:"pct",  color:"--s3", num:"emails_opened",  den:"emails_delivered"},
+  ctr:           {label:"Click-through rate",group:"email", kind:"ratio", fmt:"pct",  color:"--s3", num:"emails_clicked", den:"emails_delivered"}
+};
+
+/* ---------- sample data (deterministic) ---------- */
+function sampleData(){
+  let s = 12345; const rnd = () => (s = (s*1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const out = [], end = new Date(), start = new Date(end); start.setDate(start.getDate() - 700);
+  let followers = 2400, subs = 860;
+  for (let d = new Date(start), i = 0; d <= end; d.setDate(d.getDate()+1), i++){
+    const dow = d.getDay(), wk = (dow===0||dow===6) ? .72 : 1, trend = 1 + i/900;
+    const imp = Math.round((1800 + rnd()*900) * wk * trend);
+    const eng = Math.round(imp * (0.031 + rnd()*0.022));
+    followers += Math.round((rnd()*9) - 1.4 + i/260);
+    const sess = Math.round((240 + rnd()*160) * wk * trend);
+    const pv   = Math.round(sess * (1.9 + rnd()*0.9));
+    const conv = Math.round(sess * (0.018 + rnd()*0.017));
+    const send = (dow === 2);
+    const del  = send ? subs - Math.round(rnd()*12) : 0;
+    const op   = send ? Math.round(del * (0.38 + rnd()*0.14)) : 0;
+    const cl   = send ? Math.round(op  * (0.09 + rnd()*0.09)) : 0;
+    subs += Math.round(rnd()*7) - 1 + Math.round(i/380);
+    out.push({date:d.toISOString().slice(0,10), impressions:imp, engagements:eng, followers,
+      sessions:sess, pageviews:pv, conversions:conv,
+      subscribers:subs, emails_delivered:del, emails_opened:op, emails_clicked:cl});
+  }
+  return out;
+}
+
+/* ---------- state ---------- */
+let ROWS = [], grain = "month", metric = "impressions";
+const $ = id => document.getElementById(id);
+const iso = d => d.toISOString().slice(0,10);
+const num = v => v==null ? 0 : v;
+
+/* ---------- bucketing ---------- */
+function bucketKey(dateStr){
+  const d = new Date(dateStr + "T00:00:00");
+  if (grain === "day")   return dateStr;
+  if (grain === "year")  return dateStr.slice(0,4);
+  if (grain === "month") return dateStr.slice(0,7);
+  const t = new Date(d); t.setDate(t.getDate() - ((t.getDay()+6) % 7)); // ISO week start (Mon)
+  return iso(t);
+}
+function bucketLabel(key){
+  if (grain === "year")  return key;
+  if (grain === "month") return new Date(key+"-01T00:00:00").toLocaleDateString(undefined,{month:"short",year:"2-digit"});
+  const d = new Date(key+"T00:00:00");
+  return d.toLocaleDateString(undefined,{month:"short",day:"numeric"});
+}
+function aggregate(rows){
+  const map = new Map();
+  for (const r of rows){
+    const k = bucketKey(r.date);
+    let b = map.get(k);
+    if (!b){ b = {key:k, first:r, last:r}; map.set(k,b); }
+    b.last = r;
+    for (const f of ["impressions","engagements","sessions","pageviews","conversions",
+                     "emails_delivered","emails_opened","emails_clicked"]) b[f] = num(b[f]) + num(r[f]);
+  }
+  const list = [...map.values()].sort((a,b)=> a.key < b.key ? -1 : 1);
+  // growth is measured from the previous bucket's closing value
+  list.forEach((b,i) => b.base = i ? list[i-1].last : b.first);
+  return list;
+}
+function readMetric(b, key){
+  const m = METRICS[key];
+  if (m.kind === "ratio") return b[m.den] ? b[m.num] / b[m.den] : null;
+  if (m.kind === "level") return num(b.last[m.num]);
+  if (m.kind === "stock") return num(b.last[m.num]) - num(b.base[m.num]);
+  return num(b[m.num]);
+}
+/* total across an arbitrary set of rows, using the same semantics */
+function totalMetric(rows, key){
+  if (!rows.length) return null;
+  const m = METRICS[key], sum = f => rows.reduce((a,r)=> a + num(r[f]), 0);
+  if (m.kind === "ratio") { const d = sum(m.den); return d ? sum(m.num)/d : null; }
+  if (m.kind === "level") return num(rows[rows.length-1][m.num]);
+  if (m.kind === "stock") return num(rows[rows.length-1][m.num]) - num(rows[0][m.num]);
+  return sum(m.num);
+}
+
+/* ---------- formatting ---------- */
+const fmtInt = n => n==null ? "—" : Math.round(n).toLocaleString();
+const fmtPct = n => n==null ? "—" : (n*100).toFixed(2) + "%";
+const fmtVal = (n,key) => METRICS[key].fmt === "pct" ? fmtPct(n) : fmtInt(n);
+
+/* ---------- render ---------- */
+function selectedRows(){
+  const a = $("from").value, b = $("to").value;
+  return ROWS.filter(r => r.date >= a && r.date <= b);
+}
+function priorRows(){
+  const a = new Date($("from").value+"T00:00:00"), b = new Date($("to").value+"T00:00:00");
+  const days = Math.round((b-a)/864e5) + 1;
+  const pb = new Date(a); pb.setDate(pb.getDate()-1);
+  const pa = new Date(pb); pa.setDate(pa.getDate()-days+1);
+  return ROWS.filter(r => r.date >= iso(pa) && r.date <= iso(pb));
+}
+function deltaHTML(cur, prev, key){
+  if (cur==null || prev==null || prev===0) return `<span>no prior period</span>`;
+  const m = METRICS[key];
+  if (m.fmt === "pct"){
+    const pts = (cur - prev) * 100;
+    const cls = pts >= 0 ? "up" : "down";
+    return `<b class="${cls}">${pts>=0?"+":""}${pts.toFixed(2)} pts</b> vs prior period`;
+  }
+  const pc = ((cur - prev) / Math.abs(prev)) * 100;
+  const cls = pc >= 0 ? "up" : "down";
+  return `<b class="${cls}">${pc>=0?"+":""}${pc.toFixed(1)}%</b> vs prior period`;
+}
+function renderCards(){
+  const cur = selectedRows(), prev = priorRows();
+  const box = {social:$("cards-social"), web:$("cards-web"), email:$("cards-email")};
+  Object.values(box).forEach(el => el.innerHTML = "");
+  for (const [key,m] of Object.entries(METRICS)){
+    const c = totalMetric(cur,key), p = totalMetric(prev,key);
+    const el = document.createElement("div");
+    el.className = "card";
+    el.innerHTML = `<div class="label"><span class="dot" style="background:var(${m.color})"></span>${m.label}</div>
+      <div class="value">${m.kind==="stock" && c>0 ? "+" : ""}${fmtVal(c,key)}</div>
+      <div class="delta">${deltaHTML(c,p,key)}</div>`;
+    box[m.group].appendChild(el);
+  }
+}
+function renderChips(){
+  const el = $("chips"); el.innerHTML = "";
+  for (const [key,m] of Object.entries(METRICS)){
+    const b = document.createElement("button");
+    b.className = "chip"; b.type = "button"; b.textContent = m.label;
+    b.setAttribute("aria-pressed", key === metric);
+    b.onclick = () => { metric = key; renderChips(); renderChart(); };
+    el.appendChild(b);
+  }
+}
+function renderChart(){
+  const rows = selectedRows(), host = $("chart");
+  const buckets = aggregate(rows);
+  if (!buckets.length){ host.innerHTML = `<div class="empty">No data in this range. Widen the dates.</div>`; return; }
+  const m = METRICS[metric];
+  const vals = buckets.map(b => readMetric(b, metric));
+  const shown = vals.filter(v => v != null);
+  const asBars = (m.kind === "sum" || m.kind === "stock");
+
+  const W = 900, H = 320, L = 56, R = 12, T = 14, B = 34;
+  const iw = W-L-R, ih = H-T-B;
+  let max = Math.max(...shown, 0), min = Math.min(...shown, 0);
+  if (m.kind === "level" || m.kind === "ratio"){ const pad = (max-min)*0.15 || max*0.1 || 1; min -= pad; max += pad; }
+  else { max = max * 1.08 || 1; }
+  if (max === min) max = min + 1;
+  const y = v => T + ih - ((v-min)/(max-min))*ih;
+  const n = buckets.length;
+  const bw = iw/n, cx = i => L + bw*i + bw/2;
+
+  const ticks = 4, grid = [];
+  for (let i=0;i<=ticks;i++){
+    const v = min + (max-min)*i/ticks, yy = y(v);
+    grid.push(`<line class="grid" x1="${L}" x2="${W-R}" y1="${yy.toFixed(1)}" y2="${yy.toFixed(1)}"/>
+      <text class="axis" x="${L-8}" y="${(yy+4).toFixed(1)}" text-anchor="end">${
+        m.fmt==="pct" ? (v*100).toFixed(1)+"%" : shortNum(v)}</text>`);
+  }
+  const step = Math.ceil(n/12), xlabels = buckets.map((b,i)=>
+    i % step ? "" : `<text class="axis" x="${cx(i).toFixed(1)}" y="${H-12}" text-anchor="middle">${bucketLabel(b.key)}</text>`).join("");
+
+  let series = "";
+  if (asBars){
+    series = buckets.map((b,i)=>{
+      const v = vals[i]; if (v==null) return "";
+      const top = Math.min(y(v), y(0)), h = Math.abs(y(v)-y(0));
+      return `<rect class="bar" x="${(cx(i)-bw*0.32).toFixed(1)}" y="${top.toFixed(1)}" width="${(bw*0.64).toFixed(1)}"
+        height="${Math.max(h,1).toFixed(1)}" rx="2" fill="var(${m.color})" opacity=".85">
+        <title>${bucketLabel(b.key)} · ${fmtVal(v,metric)}</title></rect>`;
+    }).join("");
+  } else {
+    const pts = buckets.map((b,i)=> vals[i]==null ? null : [cx(i), y(vals[i])]).filter(Boolean);
+    const d = pts.map((p,i)=> (i?"L":"M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+    series = `<path d="${d}" fill="none" stroke="var(${m.color})" stroke-width="2"
+      stroke-linejoin="round" stroke-linecap="round"/>` +
+      buckets.map((b,i)=> vals[i]==null ? "" :
+        `<circle class="pt" cx="${cx(i).toFixed(1)}" cy="${y(vals[i]).toFixed(1)}" r="${n>60?1.6:3}"
+          fill="var(${m.color})"><title>${bucketLabel(b.key)} · ${fmtVal(vals[i],metric)}</title></circle>`).join("");
+  }
+
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img"
+    aria-label="${m.label} by ${grain}">${grid.join("")}${series}${xlabels}</svg>`;
+}
+function shortNum(v){
+  const a = Math.abs(v);
+  if (a >= 1e6) return (v/1e6).toFixed(1)+"M";
+  if (a >= 1e3) return (v/1e3).toFixed(1)+"k";
+  return Math.round(v).toLocaleString();
+}
+function renderAll(){
+  $("rangeLabel").textContent = `${$("from").value} → ${$("to").value} · ${
+    {day:"daily",week:"weekly",month:"monthly",year:"yearly"}[grain]}`;
+  renderCards(); renderChart();
+}
+
+/* ---------- controls ---------- */
+$("grainSeg").addEventListener("click", e => {
+  const b = e.target.closest("button"); if(!b) return;
+  grain = b.dataset.grain;
+  [...$("grainSeg").children].forEach(x => x.setAttribute("aria-pressed", x===b));
+  renderAll();
+});
+$("presetSeg").addEventListener("click", e => {
+  const b = e.target.closest("button"); if(!b) return;
+  [...$("presetSeg").children].forEach(x => x.setAttribute("aria-pressed", x===b));
+  const last = ROWS[ROWS.length-1].date;
+  if (b.dataset.preset === "all"){ $("from").value = ROWS[0].date; }
+  else { const d = new Date(last+"T00:00:00"); d.setDate(d.getDate() - (+b.dataset.preset - 1)); $("from").value = iso(d); }
+  $("to").value = last;
+  renderAll();
+});
+["from","to"].forEach(id => $(id).addEventListener("change", () => {
+  [...$("presetSeg").children].forEach(x => x.setAttribute("aria-pressed","false"));
+  renderAll();
+}));
+$("themeBtn").addEventListener("click", () => {
+  const dark = document.documentElement.dataset.theme === "dark";
+  document.documentElement.dataset.theme = dark ? "light" : "dark";
+  $("themeBtn").textContent = dark ? "Dark" : "Light";
+  renderChart();
+});
+
+/* ---------- boot ---------- */
+(async function init(){
+  const prefersDark = matchMedia("(prefers-color-scheme: dark)").matches;
+  document.documentElement.dataset.theme = prefersDark ? "dark" : "light";
+  $("themeBtn").textContent = prefersDark ? "Light" : "Dark";
+
+  let live = null;
+  try { const r = await fetch("./data.json", {cache:"no-store"}); if (r.ok) live = await r.json(); } catch(e){}
+  ROWS = (Array.isArray(live) && live.length ? live : sampleData()).slice().sort((a,b)=> a.date < b.date ? -1 : 1);
+  $("foot").textContent = live ? `${ROWS.length} days loaded from data.json` : `Sample data — replace with data.json to go live`;
+
+  $("from").min = $("to").min = ROWS[0].date;
+  $("from").max = $("to").max = ROWS[ROWS.length-1].date;
+  $("to").value = ROWS[ROWS.length-1].date;
+  const d = new Date($("to").value+"T00:00:00"); d.setDate(d.getDate()-364);
+  $("from").value = iso(d) < ROWS[0].date ? ROWS[0].date : iso(d);
+
+  renderChips(); renderAll();
+})();
+</script>
+</body>
+</html>

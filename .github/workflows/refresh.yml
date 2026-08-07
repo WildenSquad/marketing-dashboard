@@ -1,0 +1,97 @@
+name: Refresh dashboard data
+
+on:
+  schedule:
+    # 06:30 UTC daily. GitHub's scheduled runs are best-effort and routinely
+    # drift 15-30 minutes late, so nothing here may depend on exact timing.
+    # The fetcher always re-reads a trailing 7-day window, which makes a late
+    # or skipped run harmless.
+    - cron: "30 6 * * *"
+
+  # Scheduled workflows are silently disabled after 60 days of repository
+  # inactivity, and commits made by this job do NOT reliably reset that timer.
+  # This trigger is the manual escape hatch: Actions tab -> this workflow ->
+  # "Run workflow".
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  # Never let a manual run and a scheduled run race to commit data.json.
+  group: refresh-data
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Fetch and merge
+        id: fetch
+        # The script exits 1 when a source fails or returns zero rows, but it
+        # still writes whatever DID succeed. Capture the code instead of
+        # letting it abort the job, so a single dead source doesn't discard
+        # three good ones — then fail the job at the end, after committing.
+        continue-on-error: true
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          BUFFER_ORG_ID: ${{ secrets.BUFFER_ORG_ID }}
+          BLUESKY_HANDLE: ${{ secrets.BLUESKY_HANDLE }}
+          MAILCHIMP_API_KEY: ${{ secrets.MAILCHIMP_API_KEY }}
+          MAILCHIMP_LIST_ID: ${{ secrets.MAILCHIMP_LIST_ID }}
+          GA4_PROPERTY_ID: ${{ secrets.GA4_PROPERTY_ID }}
+          GA4_SERVICE_ACCOUNT: ${{ secrets.GA4_SERVICE_ACCOUNT }}
+        run: |
+          set +e
+          node scripts/fetch.mjs 2>&1 | tee fetch.log
+          echo "code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Guard against a truncated data.json
+        # The file is the system of record: Mailchimp ages out at ~180 days,
+        # Buffer at 365, and Bluesky has no history at all. A commit that
+        # shrinks it is unrecoverable, so refuse to commit one.
+        run: |
+          git fetch origin ${{ github.ref_name }} --depth=1
+          before=$(git show origin/${{ github.ref_name }}:data.json 2>/dev/null | node -e \
+            'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s||"[]").length))' || echo 0)
+          after=$(node -e \
+            'console.log(JSON.parse(require("fs").readFileSync("data.json","utf8")).length)')
+          echo "rows: $before -> $after"
+          if [ "$after" -lt "$before" ]; then
+            echo "::error::data.json shrank from $before to $after rows — refusing to commit."
+            exit 1
+          fi
+
+      - name: Commit data.json
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data.json
+          if git diff --staged --quiet; then
+            echo "No change to data.json."
+          else
+            git commit -m "data: refresh $(date -u +%Y-%m-%d)"
+            git push
+          fi
+
+      - name: Report source failures
+        # Runs last so the data is already committed. A source returning zero
+        # rows is the failure mode that would otherwise go unnoticed forever:
+        # the job goes green, the file is unchanged, and the dashboard quietly
+        # shows stale numbers.
+        if: steps.fetch.outputs.code != '0'
+        run: |
+          echo "### Refresh finished with errors" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -n 30 fetch.log >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::One or more sources failed or returned zero rows — see the job summary."
+          exit 1
