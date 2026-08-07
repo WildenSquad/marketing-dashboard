@@ -53,7 +53,16 @@ const COUNT_FIELDS = [
   "sessions", "pageviews", "conversions",
   "emails_delivered", "emails_opened", "emails_clicked",
 ];
-const LEVEL_FIELDS = ["followers", "subscribers"];
+/* Follower levels are stored PER NETWORK, never pre-summed.
+   A combined total written at fetch time would collapse the moment one
+   source failed: if Meta's token expired one night, the stored total would
+   drop by ~1,900 and read as catastrophic follower loss rather than as a
+   missing reading. Kept separate, each carries forward independently and
+   the dashboard sums whatever is actually present. */
+const LEVEL_FIELDS = [
+  "followers_bluesky", "followers_instagram", "followers_facebook",
+  "subscribers",
+];
 
 const emptyRow = (date) => {
   const r = { date };
@@ -266,7 +275,37 @@ export async function fetchBlueskyFollowers() {
     `https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=${encodeURIComponent(handle)}`
   );
   const profile = await res.json();
-  return { date: iso(new Date()), followers: profile.followersCount ?? null };
+  return { date: iso(new Date()), followers_bluesky: profile.followersCount ?? null };
+}
+
+/* ================================================================== *
+ * SOURCE 5 — Meta. Instagram + Facebook follower levels.
+ *
+ * One System User token covers both. Read-only scopes: pages_show_list,
+ * pages_read_engagement, instagram_basic, instagram_manage_insights. None of
+ * them can publish, and the Graph API has no endpoint that deletes a Page or
+ * an Instagram account, so a leaked token exposes public metrics only.
+ *
+ * The Instagram account is reached THROUGH the Page rather than assigned as
+ * its own asset — it's a linked account, so its permissions are inherited.
+ * That keeps the grant to a single asset.
+ *
+ * Levels again: point-in-time only, no history available anywhere.
+ * ================================================================== */
+export async function fetchMetaFollowers() {
+  const token = env("META_ACCESS_TOKEN");
+  const pageId = env("META_PAGE_ID");
+  const fields = "followers_count,instagram_business_account{followers_count}";
+  const res = await request(
+    `https://graph.facebook.com/v21.0/${pageId}` +
+    `?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(token)}`
+  );
+  const json = await res.json();
+  return {
+    date: iso(new Date()),
+    followers_facebook: json.followers_count ?? null,
+    followers_instagram: json.instagram_business_account?.followers_count ?? null,
+  };
 }
 
 /* ================================================================== *
@@ -471,8 +510,12 @@ async function main() {
     ["mailchimp", () => fetchMailchimp(from, to)],
     ["ga4", () => fetchGA4(from, to)],
     ["bluesky", async () => {
-      const { date, followers } = await fetchBlueskyFollowers();
-      return new Map([[date, { followers }]]);
+      const { date, ...levels } = await fetchBlueskyFollowers();
+      return new Map([[date, levels]]);
+    }],
+    ["meta", async () => {
+      const { date, ...levels } = await fetchMetaFollowers();
+      return new Map([[date, levels]]);
     }],
   ]) {
     try {

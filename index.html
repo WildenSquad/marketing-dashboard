@@ -180,7 +180,7 @@
 
 const COUNTS = ["views","reach","reactions","comments","shares","reach_engagements",
   "sessions","pageviews","conversions","emails_delivered","emails_opened","emails_clicked"];
-const LEVELS = ["followers","subscribers"];
+const LEVELS = ["followers_bluesky","followers_instagram","followers_facebook","subscribers"];
 
 const METRICS = {
   views:       {label:"Views",              group:"social", kind:"sum",   fmt:"int", color:"--s1", num:"views",
@@ -188,9 +188,12 @@ const METRICS = {
   engagement:  {label:"Engagement rate",    group:"social", kind:"ratio", fmt:"pct", color:"--s1", num:"reach_engagements", den:"reach",
                 zero:"No reach recorded in this range",
                 note:"Engagements ÷ reach, both counted only from Instagram and LinkedIn. Facebook and Bluesky report engagement but not reach, so including them would inflate this."},
-  followers:   {label:"Follower growth",    group:"social", kind:"stock", fmt:"int", color:"--s1", num:"followers",
-                note:"Bluesky only — Buffer exposes no follower count for Instagram, Facebook or LinkedIn. There is no historical series, so this fills in from the day tracking started."},
+  followers:   {label:"Follower growth",    group:"social", kind:"stock", fmt:"int", color:"--s1",
+                num:["followers_bluesky","followers_instagram","followers_facebook"],
+                note:"Bluesky, Instagram and Facebook. LinkedIn is excluded — its follower count needs Marketing Developer Platform approval. Networks are summed only where both ends of the range are known, so adding a network later doesn't register as a spike in growth."},
   reach:       {label:"Reach",              group:"social", kind:"sum",   fmt:"int", color:"--s1", num:"reach", chartOnly:true},
+  followerlvl: {label:"Followers (total)",  group:"social", kind:"level",  fmt:"int", color:"--s1",
+                num:["followers_bluesky","followers_instagram","followers_facebook"], chartOnly:true},
   engagements: {label:"Engagements",        group:"social", kind:"sum",   fmt:"int", color:"--s1", num:["reactions","comments","shares"], chartOnly:true},
 
   sessions:    {label:"Sessions",           group:"web",    kind:"sum",   fmt:"int", color:"--s2", num:"sessions"},
@@ -279,14 +282,33 @@ function aggregate(rows){
   }
   return list;
 }
+/* Sum a level across networks, skipping the ones with no reading. Returns
+   null only when nothing at all is known — a network we don't track yet must
+   not read as zero followers. */
+function sumLevels(pick, m){
+  let total = null;
+  for (const f of fields(m)){
+    const v = pick(f);
+    if (v != null) total = (total ?? 0) + v;
+  }
+  return total;
+}
+/* Growth, summed per network and only where BOTH ends are known. Otherwise
+   connecting Instagram mid-range would book its entire 1,295 followers as
+   one day's growth. */
+function sumGrowth(base, level, m){
+  let total = null;
+  for (const f of fields(m)){
+    const a = base(f), z = level(f);
+    if (a != null && z != null) total = (total ?? 0) + (z - a);
+  }
+  return total;
+}
 function readMetric(b, key){
   const m = METRICS[key];
   if (m.kind === "ratio") return b[m.den] ? sumOf(b, m) / b[m.den] : null;
-  if (m.kind === "level") return b.level[m.num];
-  if (m.kind === "stock"){
-    const a = b.base[m.num], z = b.level[m.num];
-    return (a == null || z == null) ? null : z - a;
-  }
+  if (m.kind === "level") return sumLevels(f => b.level[f], m);
+  if (m.kind === "stock") return sumGrowth(f => b.base[f], f => b.level[f], m);
   return sumOf(b, m);
 }
 /* Total across an arbitrary set of rows, using the same semantics. */
@@ -294,11 +316,9 @@ function totalMetric(rows, key){
   if (!rows.length) return null;
   const m = METRICS[key], sum = f => rows.reduce((a,r)=> a + num(r[f]), 0);
   if (m.kind === "ratio"){ const d = sum(m.den); return d ? fields(m).reduce((a,f)=>a+sum(f),0)/d : null; }
-  if (m.kind === "level") return lastLevel(rows, m.num);
-  if (m.kind === "stock"){
-    const a = levelBefore(rows[0].date, m.num), z = lastLevel(rows, m.num);
-    return (a == null || z == null) ? null : z - a;
-  }
+  if (m.kind === "level") return sumLevels(f => lastLevel(rows, f), m);
+  if (m.kind === "stock")
+    return sumGrowth(f => levelBefore(rows[0].date, f), f => lastLevel(rows, f), m);
   return fields(m).reduce((a,f) => a + sum(f), 0);
 }
 /* Did this metric have anything to work with at all in this range? Used to
@@ -306,7 +326,9 @@ function totalMetric(rows, key){
 function hasBasis(rows, key){
   const m = METRICS[key];
   if (m.kind === "ratio") return rows.reduce((a,r)=> a + num(r[m.den]), 0) > 0;
-  if (m.kind === "level" || m.kind === "stock") return lastLevel(rows, m.num) != null;
+  if (m.kind === "level") return fields(m).some(f => lastLevel(rows, f) != null);
+  if (m.kind === "stock")
+    return fields(m).some(f => lastLevel(rows, f) != null && levelBefore(rows[0].date, f) != null);
   return true;
 }
 
