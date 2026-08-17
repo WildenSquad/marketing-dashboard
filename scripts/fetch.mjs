@@ -49,7 +49,7 @@ const eachDay = (from, to) => {
  * ------------------------------------------------------------------ */
 const COUNT_FIELDS = [
   "views", "reach", "reactions", "comments", "shares",
-  "reach_engagements",
+  "reach_engagements", "posts",
   "sessions", "pageviews", "conversions",
   "emails_delivered", "emails_opened", "emails_clicked",
 ];
@@ -191,8 +191,12 @@ function postViews(metrics) {
   return views ?? impressions ?? 0;
 }
 
-/* Count fields Buffer contributes, tracked per channel as well as in total. */
-const BUFFER_COUNTS = ["views", "reach", "reactions", "comments", "shares", "reach_engagements"];
+/* Count fields Buffer contributes, tracked per channel as well as in total.
+   `posts` is the only one every channel can produce, which makes
+   engagements-per-post the sole engagement measure comparable across all
+   four — reach exists on two, views on three. */
+const BUFFER_COUNTS = ["views", "reach", "reactions", "comments", "shares",
+  "reach_engagements", "posts"];
 
 export async function fetchBuffer(from, to) {
   const organizationId = env("BUFFER_ORG_ID");
@@ -242,6 +246,7 @@ export async function fetchBuffer(from, to) {
 
       const add = (field, value) => { bucket[field] = (bucket[field] ?? 0) + value; };
 
+      add("posts", 1);
       add("views", postViews(metrics));
 
       /* Engagements from THIS post, and whether this post reported reach.
@@ -517,9 +522,20 @@ async function main() {
   }
 
   const firstRun = existing.length === 0;
-  const from = daysAgo(firstRun ? BACKFILL_DAYS : REFRESH_DAYS);
   const to = iso(new Date());
-  console.log(`Window: ${from} -> ${to}${firstRun ? " (backfill)" : ""}`);
+
+  /* Normally the trailing refresh window. But if the job has not run for
+     longer than that — a drifted schedule, a disabled workflow, a failed
+     night — the days in between would never be written at all, and the
+     source APIs age out. So reach back to the last row we have whenever
+     that is further than the refresh window. */
+  const refreshFrom = daysAgo(REFRESH_DAYS);
+  const lastRow = existing.at(-1)?.date;
+  const from = firstRun ? daysAgo(BACKFILL_DAYS)
+    : (lastRow && lastRow < refreshFrom ? lastRow : refreshFrom);
+
+  const gap = !firstRun && from === lastRow && lastRow < refreshFrom;
+  console.log(`Window: ${from} -> ${to}${firstRun ? " (backfill)" : gap ? " (catching up a missed run)" : ""}`);
 
   const sources = [];
   const failures = [];

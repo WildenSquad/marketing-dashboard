@@ -1,0 +1,14 @@
+[
+  {
+    "date": "2026-03-30",
+    "label": "Website relaunched — analytics tag missing",
+    "detail": "The new site shipped without the GA4 tag. Sessions and pageviews read zero from this date until tracking was restored on 2026-08-07. Those zeros are missing measurement, not lost traffic.",
+    "scope": "web"
+  },
+  {
+    "date": "2026-08-07",
+    "label": "Analytics restored; follower tracking begins",
+    "detail": "GA4 tracking fixed. Bluesky, Instagram and Facebook follower counts recorded for the first time — none of these networks publish history, so the series starts here and grows forward.",
+    "scope": "all"
+  }
+]

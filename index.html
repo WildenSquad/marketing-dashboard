@@ -74,6 +74,9 @@
   .dot{width:7px; height:7px; border-radius:50%; flex:none}
   .card .value{font-size:24px; font-weight:600; letter-spacing:-.02em; margin-top:4px;
     font-variant-numeric:tabular-nums}
+  .card .value.na{font-size:15px; font-weight:500; color:var(--muted); letter-spacing:0}
+  .ann{stroke:var(--muted); stroke-dasharray:3 3; opacity:.6}
+  .annlabel{fill:var(--muted); font-size:10px}
   .card .delta{font-size:12px; margin-top:2px; color:var(--muted); font-variant-numeric:tabular-nums}
   .delta b{font-weight:500}
   .up{color:var(--up)} .down{color:var(--down)}
@@ -102,6 +105,61 @@
   .empty{color:var(--muted); font-size:13px; padding:40px 0; text-align:center}
   footer{margin-top:18px; font-size:12px; color:var(--muted)}
   @media (prefers-reduced-motion:no-preference){ .bar,.pt{transition:opacity .12s} }
+
+  /* headline strip — the four numbers an executive should read first */
+  .headline{display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:14px}
+  @media(max-width:720px){ .headline{grid-template-columns:repeat(2,1fr)} }
+  .hcard{border:1px solid var(--line-strong); border-radius:var(--radius); padding:14px 16px; background:var(--panel)}
+  .hcard .label{font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--muted)}
+  .hcard .value{font-size:30px; font-weight:600; letter-spacing:-.025em; margin-top:6px;
+    font-variant-numeric:tabular-nums; line-height:1.1}
+  .hcard .delta{font-size:12px; margin-top:3px; color:var(--muted); font-variant-numeric:tabular-nums}
+
+  .coverage{font-size:11.5px; color:var(--muted); margin:0 0 22px; line-height:1.6}
+  .coverage b{font-weight:500; color:var(--text)}
+
+  /* per-source warning banner, e.g. the analytics gap */
+  .flag{border:1px solid var(--line-strong); border-left:3px solid var(--down);
+    border-radius:var(--radius); padding:9px 12px; margin-bottom:10px;
+    font-size:12px; color:var(--muted); line-height:1.5; background:var(--panel)}
+  .flag b{color:var(--text); font-weight:600}
+  .softflag{border-left-color:var(--line-strong)}
+
+  /* channel comparison — the cross-channel view, always visible */
+  .tablewrap{overflow-x:auto; margin-top:12px; border:1px solid var(--line); border-radius:var(--radius)}
+  table{border-collapse:collapse; width:100%; font-size:13px; min-width:560px}
+  th,td{text-align:right; padding:8px 12px; white-space:nowrap;
+    border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums}
+  th{font-size:11px; font-weight:600; letter-spacing:.04em; text-transform:uppercase;
+    color:var(--muted); background:var(--chip)}
+  th:first-child,td:first-child{text-align:left; font-variant-numeric:normal}
+  tbody tr:last-child td{border-bottom:0}
+  tfoot td{font-weight:600; border-top:1px solid var(--line-strong); border-bottom:0}
+  td.dim{color:var(--muted)}
+  .tnote{font-size:11px; color:var(--muted); margin:6px 2px 0; line-height:1.5}
+
+  .legend{font-size:11px; color:var(--muted); margin-top:8px; line-height:1.5}
+  .method{margin-top:26px; border-top:1px solid var(--line); padding-top:12px}
+  .method summary{font-size:12px; color:var(--muted); cursor:pointer}
+  .method summary:focus-visible{outline:2px solid var(--s1); outline-offset:2px}
+  .method dl{margin:12px 0 0; font-size:12px; color:var(--muted); line-height:1.6}
+  .method dt{font-weight:600; color:var(--text); margin-top:10px}
+  .method dd{margin:2px 0 0}
+
+  /* Board packs get printed. Drop the controls, force ink-on-paper colours,
+     and keep cards from splitting across pages. */
+  @media print{
+    .controls,.seg,#themeBtn,.chips{display:none !important}
+    .method[open] summary{display:none}
+    .method{border-top:1px solid #ccc}
+    :root{--bg:#fff; --panel:#fff; --text:#000; --muted:#444;
+      --line:#ddd; --line-strong:#bbb; --chip:#f4f4f4}
+    body{font-size:11pt}
+    .wrap{max-width:none; padding:0}
+    .card,.hcard,.group,.chartbox,table{break-inside:avoid}
+    .group{margin-bottom:18px}
+    a[href]:after{content:""}
+  }
 </style>
 </head>
 <body>
@@ -134,6 +192,10 @@
     </div>
   </div>
 
+  <div class="headline" id="headline"></div>
+
+  <p class="coverage" id="coverage"></p>
+
   <div class="group">
     <div class="grouphead">
       <h2>Social &mdash; Buffer</h2>
@@ -146,22 +208,31 @@
       </div>
     </div>
     <div class="cards" id="cards-social"></div>
+    <div id="channelTable"></div>
   </div>
 
   <div class="group">
     <h2>Website &mdash; Google Analytics</h2>
+    <div id="note-web"></div>
     <div class="cards" id="cards-web"></div>
   </div>
 
   <div class="group">
     <h2>Newsletter</h2>
+    <div id="note-email"></div>
     <div class="cards" id="cards-email"></div>
   </div>
 
   <div class="chartbox">
     <div class="chips" id="chips"></div>
     <div id="chart"></div>
+    <div class="legend" id="chartNotes"></div>
   </div>
+
+  <details class="method" id="method">
+    <summary>How these numbers are calculated</summary>
+    <div id="methodBody"></div>
+  </details>
 
   <footer id="foot"></footer>
 </div>
@@ -216,23 +287,33 @@ const METRICS = {
                 growth:true,
                 zero:"Not yet recorded for this channel",
                 note:"Bluesky, Instagram and Facebook. LinkedIn is excluded — its follower count needs Marketing Developer Platform approval. Networks are summed only where both ends of the range are known, so connecting a network later doesn't register as a spike in growth."},
-  reach:       {label:"Reach",              group:"social", kind:"sum",   fmt:"int", color:"--s1", num:"reach", chartOnly:true},
+  reach:       {label:"Reach (non-unique)", group:"social", kind:"sum",   fmt:"int", color:"--s1", num:"reach", chartOnly:true,
+                note:"The sum of per-post reach, not a count of distinct people. Someone who saw twelve posts is counted twelve times, so this is always far larger than the audience. It is the correct denominator for engagement rate, but it is not an audience size."},
   followergrowth:{label:"Follower growth",  group:"social", kind:"stock", fmt:"int", color:"--s1",
                 num:["followers_bluesky","followers_instagram","followers_facebook"], chartOnly:true},
+  posts:       {label:"Posts published",    group:"social", kind:"sum",   fmt:"int", color:"--s1", num:"posts", chartOnly:true,
+                note:"Posts sent through Buffer. The only volume figure every channel reports, which is what makes engagements per post comparable across all four."},
+  engperpost:  {label:"Engagements per post", group:"social", kind:"ratio", fmt:"num2", color:"--s1",
+                num:["reactions","comments","shares"], den:"posts", chartOnly:true,
+                zero:"No posts in this range",
+                note:"Reactions + comments + shares ÷ posts published. Unlike engagement rate, this works on every channel — reach exists on only two of the four, and views on three."},
   engagements: {label:"Engagements",        group:"social", kind:"sum",   fmt:"int", color:"--s1", num:["reactions","comments","shares"], chartOnly:true},
 
   sessions:    {label:"Sessions",           group:"web",    kind:"sum",   fmt:"int", color:"--s2", num:"sessions"},
   pageviews:   {label:"Pageviews",          group:"web",    kind:"sum",   fmt:"int", color:"--s2", num:"pageviews"},
   conversion:  {label:"Conversion rate",    group:"web",    kind:"ratio", fmt:"pct", color:"--s2", num:"conversions", den:"sessions",
                 zero:"No sessions in this range",
-                note:"GA4 key events (the metric formerly called conversions). Reads 0% until an event is marked as a key event in GA4."},
+                na:"No GA4 key event is defined, so there is nothing to count. Mark one in GA4 Admin → Events.",
+                note:"GA4 key events ÷ sessions. GA4 has no metric called 'conversions' any more — it was renamed to key events. Nothing on this property is marked as a key event yet, so there is nothing to count."},
 
   subscribers: {label:"Subscribers",        group:"email",  kind:"level", fmt:"int", color:"--s3", num:"subscribers",
-                note:"Mailchimp reports only a current total. Its daily subs/unsubs deltas don't reconcile with it, so history starts the day tracking began rather than being reconstructed."},
+                note:"Mailchimp reports only a current total. Its daily subs/unsubs deltas don't reconcile with it — they sum to +829 against a member count of 272 — so history starts the day tracking began rather than being reconstructed from figures that don't add up."},
   openrate:    {label:"Open rate",          group:"email",  kind:"ratio", fmt:"pct", color:"--s3", num:"emails_opened",  den:"emails_delivered",
-                zero:"No sends in this range"},
+                zero:"No sends in this range", benchmark:0.29, benchmarkLabel:"nonprofit average ~29%",
+                note:"Opens ÷ delivered, where delivered nets out hard and soft bounces. Treat this as directional only: Apple Mail Privacy Protection pre-loads tracking pixels, registering an open whether or not anyone read the message. Industry-wide open rates are inflated for the same reason, so the comparison is at least like-for-like — but the click rate below is the number to trust."},
   ctr:         {label:"Click-through rate", group:"email",  kind:"ratio", fmt:"pct", color:"--s3", num:"emails_clicked", den:"emails_delivered",
-                zero:"No sends in this range"}
+                zero:"No sends in this range", benchmark:0.034, benchmarkLabel:"nonprofit average ~3.4%",
+                note:"Clicks ÷ delivered. Unaffected by Apple's pixel pre-loading, so this is the reliable measure of whether the newsletter is landing."}
 };
 
 /* ---------- state ---------- */
@@ -240,6 +321,24 @@ const METRICS = {
    Everything downstream reads ROWS, so filtering is a single projection
    rather than a condition threaded through every calculation. */
 let RAW = [], ROWS = [], grain = "month", metric = "views", channel = "all";
+let ANNOTATIONS = [];
+/* Whether this GA4 property records key events at all. If it never has, the
+   conversion rate is unmeasurable rather than zero. */
+let KEY_EVENTS = false;
+/* First day of an ongoing analytics blackout, or null. Zeros inside it are
+   absent measurement, not observed traffic. */
+let WEB_GAP = null;
+
+/* Returns {value, note} when a metric cannot be measured at all, as opposed
+   to measuring zero. Reporting "0" or "−100%" for something nobody counted
+   is the difference between a quiet quarter and a broken tag. */
+function unavailable(key){
+  const m = METRICS[key];
+  if (key === "conversion" && !KEY_EVENTS) return {value:"Not configured", note:m.na};
+  if (m.group === "web" && WEB_GAP && $("from").value >= WEB_GAP)
+    return {value:"—", note:`No analytics recorded from ${WEB_GAP} onward — see the note above.`};
+  return null;
+}
 
 /* Buffer's per-channel counts, and which follower level belongs to which
    channel. LinkedIn has none — its follower count needs Marketing Developer
@@ -388,18 +487,26 @@ function hasBasis(rows, key){
 /* ---------- formatting ---------- */
 const fmtInt = n => n==null ? "—" : Math.round(n).toLocaleString();
 const fmtPct = n => n==null ? "—" : (n*100).toFixed(2) + "%";
-const fmtVal = (n,key) => METRICS[key].fmt === "pct" ? fmtPct(n) : fmtInt(n);
+const fmtNum2 = n => n==null ? "—" : n.toFixed(2);
+const fmtVal = (n,key) => {
+  const f = METRICS[key].fmt;
+  return f === "pct" ? fmtPct(n) : f === "num2" ? fmtNum2(n) : fmtInt(n);
+};
 
 /* ---------- render ---------- */
 function selectedRows(){
   const a = $("from").value, b = $("to").value;
   return ROWS.filter(r => r.date >= a && r.date <= b);
 }
-/* The immediately preceding period of equal length. */
+/* The immediately preceding period of equal length — but only if the data
+   actually covers it. Comparing a full year against the three weeks of
+   history that precede it produced "+12,736%", which is arithmetic rather
+   than information. A partial baseline is worse than none, so refuse it. */
 function priorRows(){
   const a = $("from").value, b = $("to").value;
   const days = Math.round((parse(b) - parse(a)) / 864e5) + 1;
   const pb = shift(a, -1), pa = shift(pb, -(days-1));
+  if (!RAW.length || pa < RAW[0].date) return [];
   return ROWS.filter(r => r.date >= pa && r.date <= pb);
 }
 function deltaHTML(cur, prev, key){
@@ -440,16 +547,165 @@ function renderCards(){
     const el = document.createElement("div");
     el.className = "card";
     const sign = m.kind === "stock" && c > 0 ? "+" : "";
-    const indicator = !basis ? `<span>${m.zero || "Not recorded in this range"}</span>`
-      : m.growth ? growthHTML(cur, key)
-      : deltaHTML(c, p, key);
+
+    /* Some metrics aren't zero — they're unmeasurable. Saying "0.00%" when
+       nothing is configured to be counted reads as failure rather than as
+       an absent setting. */
+    const na = unavailable(key);
+    const indicator =
+      na ? `<span>${na.note}</span>` :
+      !basis ? `<span>${m.zero || "Not recorded in this range"}</span>` :
+      m.growth ? growthHTML(cur, key) :
+      deltaHTML(c, p, key);
+
+    const bench = (!na && basis && c != null && m.benchmark != null)
+      ? `<div class="note">${c >= m.benchmark ? "▲ above" : "▼ below"} ${m.benchmarkLabel}</div>`
+      : "";
+
     el.innerHTML =
       `<div class="label"><span class="dot" style="background:var(${m.color})"></span>${m.label}</div>
-       <div class="value">${sign}${fmtVal(c,key)}</div>
-       <div class="delta">${indicator}</div>
-       ${m.note ? `<div class="note">${m.note}</div>` : ""}`;
+       <div class="value${na ? " na" : ""}">${na ? na.value : sign + fmtVal(c,key)}</div>
+       <div class="delta">${indicator}</div>${bench}`;
     box[m.group].appendChild(el);
   }
+}
+
+/* ---------- the executive view ---------- */
+
+/* Four numbers above everything else. Sessions is included even while GA4 is
+   dark, because its absence is itself the story this quarter. */
+const HEADLINE = ["views", "engagements", "subscribers", "sessions"];
+
+function renderHeadline(){
+  const cur = selectedRows(), prev = priorRows();
+  const host = $("headline"); host.innerHTML = "";
+  for (const key of HEADLINE){
+    const m = METRICS[key];
+    const na = unavailable(key);
+    const basis = m.kind === "level" ? hasBasis(cur, key) : cur.length > 0;
+    const c = basis ? totalMetric(cur, key) : null;
+    const p = (m.kind === "level" ? hasBasis(prev, key) : prev.length > 0)
+      ? totalMetric(prev, key) : null;
+    const el = document.createElement("div");
+    el.className = "hcard";
+    el.innerHTML =
+      `<div class="label">${m.short ?? m.label}</div>
+       <div class="value">${na ? na.value : fmtVal(c, key)}</div>
+       <div class="delta">${na ? na.note : c == null ? "&nbsp;" : deltaHTML(c, p, key)}</div>`;
+    host.appendChild(el);
+  }
+}
+
+/* Coverage differs per source — Buffer has 190 days of posts, GA4 stops in
+   March, the newsletter sent 5 times, followers started today. "Last 30
+   days" therefore means something different in each section, and an
+   executive comparing them deserves to be told so. */
+function renderCoverage(){
+  const rows = selectedRows();
+  const days = (test) => rows.filter(test).length;
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  const parts = [
+    ["Social", plural(days(r => (r.posts ?? 0) > 0), "day with posts", "days with posts")],
+    ["Website", plural(days(r => (r.sessions ?? 0) > 0), "day with sessions", "days with sessions")],
+    ["Newsletter", plural(days(r => (r.emails_delivered ?? 0) > 0), "send", "sends")],
+    ["Followers", plural(days(r => LEVELS.some(f => f.startsWith("followers") && r[f] != null)),
+      "day recorded", "days recorded")],
+  ];
+  $("coverage").innerHTML = "Data coverage in this range — " +
+    parts.map(([n,v]) => `${n}: <b>${v}</b>`).join(" · ") +
+    ` · out of ${plural(rows.length, "day", "days")} selected.`;
+}
+
+/* The cross-channel comparison. Deliberately ignores the channel filter:
+   this is the view you read to decide where the effort should go. */
+const CHANNELS = ["instagram", "linkedin", "facebook", "bluesky"];
+const CH_LABEL = {instagram:"Instagram", linkedin:"LinkedIn", facebook:"Facebook", bluesky:"Bluesky"};
+const CH_FOLLOWER = CHANNEL_FOLLOWERS;
+
+function renderChannelTable(){
+  const rows = RAW.filter(r => r.date >= $("from").value && r.date <= $("to").value);
+  const sum = (ch, f) => rows.reduce((a,r) => a + (r.by_channel?.[ch]?.[f] ?? 0), 0);
+  const cell = (v, ok=true) => ok ? fmtInt(v) : `<span class="dim">—</span>`;
+
+  const body = CHANNELS.map(ch => {
+    const posts = sum(ch,"posts");
+    const views = sum(ch,"views");
+    const reach = sum(ch,"reach");
+    const eng = sum(ch,"reactions") + sum(ch,"comments") + sum(ch,"shares");
+    const per = posts ? eng/posts : null;
+    const ff = CH_FOLLOWER[ch];
+    const fol = ff ? lastLevel(rows, ff) : null;
+    return {ch, posts, views, reach, eng, per, fol};
+  }).sort((a,b) => (b.per ?? -1) - (a.per ?? -1));
+
+  const tot = body.reduce((a,r) => ({
+    posts:a.posts+r.posts, views:a.views+r.views, reach:a.reach+r.reach, eng:a.eng+r.eng,
+    fol:(r.fol==null? a.fol : (a.fol ?? 0) + r.fol),
+  }), {posts:0,views:0,reach:0,eng:0,fol:null});
+
+  $("channelTable").innerHTML = `
+    <div class="tablewrap"><table>
+      <thead><tr>
+        <th scope="col">Channel</th><th scope="col">Posts</th><th scope="col">Views</th>
+        <th scope="col">Reach&nbsp;†</th><th scope="col">Engagements</th>
+        <th scope="col">Per post</th><th scope="col">Followers</th>
+      </tr></thead>
+      <tbody>${body.map(r => `<tr>
+        <td>${CH_LABEL[r.ch]}</td>
+        <td>${cell(r.posts)}</td>
+        <td>${cell(r.views, r.views > 0)}</td>
+        <td>${cell(r.reach, r.reach > 0)}</td>
+        <td>${cell(r.eng)}</td>
+        <td>${r.per == null ? '<span class="dim">—</span>' : fmtNum2(r.per)}</td>
+        <td>${r.fol == null ? '<span class="dim">—</span>' : fmtInt(r.fol)}</td>
+      </tr>`).join("")}</tbody>
+      <tfoot><tr>
+        <td>All channels</td><td>${fmtInt(tot.posts)}</td><td>${fmtInt(tot.views)}</td>
+        <td>${fmtInt(tot.reach)}</td><td>${fmtInt(tot.eng)}</td>
+        <td>${tot.posts ? fmtNum2(tot.eng/tot.posts) : "—"}</td>
+        <td>${tot.fol == null ? "—" : fmtInt(tot.fol)}</td>
+      </tr></tfoot>
+    </table></div>
+    <p class="tnote">Sorted by engagements per post — the only engagement measure every channel supports.
+      A dash means the network does not report that metric at all, which is not the same as zero.
+      † Reach is the sum of per-post reach, so the same person counts once per post seen; it is not an audience size.</p>`;
+}
+
+/* Warnings attached to a source, e.g. the analytics blackout. */
+function renderFlags(){
+  const web = $("note-web"), email = $("note-email");
+  web.innerHTML = ""; email.innerHTML = "";
+
+  if (WEB_GAP){
+    const ann = ANNOTATIONS.filter(a => a.scope === "web").map(a => a.detail).join(" ");
+    web.innerHTML = `<div class="flag"><b>No analytics data recorded since ${WEB_GAP}.</b>
+      ${ann || "Zeros after this date are missing measurement, not lost traffic."}</div>`;
+  }
+
+  const sends = selectedRows().filter(r => (r.emails_delivered ?? 0) > 0);
+  const lastSend = sends.at(-1)?.date;
+  email.innerHTML = `<div class="flag softflag">${
+    sends.length === 0
+      ? "<b>No sends in this range.</b> Open rate and click-through need a send to measure; widen the range to see campaign performance."
+      : `<b>${sends.length} send${sends.length===1?"":"s"} in this range</b>, most recently ${lastSend}. Rates below are pooled across those sends, not averaged.`
+  }</div>`;
+}
+
+/* Every methodology note in one place, so the cards stay readable. */
+function renderMethod(){
+  const seen = new Set();
+  const items = Object.entries(METRICS).filter(([k,m]) => m.note && !seen.has(k) && seen.add(k));
+  $("methodBody").innerHTML = `<dl>${items.map(([k,m]) =>
+    `<dt>${m.label}</dt><dd>${m.note}</dd>`).join("")}
+    <dt>Rates are never stored</dt><dd>data.json holds raw counts only. Every
+    percentage here is computed from summed counts at the moment you read it,
+    because averaging daily rates gives the wrong answer — the correct weekly
+    open rate is total opens ÷ total delivered, not the mean of seven daily
+    rates.</dd>
+    <dt>Comparison periods</dt><dd>Each card compares against the immediately
+    preceding period of equal length. Counts show percentage change; rates show
+    percentage-point change, since the difference between two percentages is
+    not itself a percentage.</dd></dl>`;
 }
 function renderChips(){
   const el = $("chips"); el.innerHTML = "";
@@ -464,6 +720,7 @@ function renderChips(){
 function renderChart(){
   const rows = selectedRows(), host = $("chart");
   const buckets = aggregate(rows);
+  $("chartNotes").innerHTML = "";
   if (!buckets.length){ host.innerHTML = `<div class="empty">No data in this range. Widen the dates.</div>`; return; }
   const m = METRICS[metric];
   const vals = buckets.map(b => readMetric(b, metric));
@@ -520,8 +777,23 @@ function renderChart(){
           fill="var(${m.color})"><title>${bucketLabel(b.key)} · ${fmtVal(vals[i],metric)}</title></circle>`).join("");
   }
 
+  /* Event markers. Without them the March cliff in web traffic looks like a
+     collapse; with them it reads as the tag going missing, which is what
+     actually happened. */
+  const marks = [], notes = [];
+  for (const a of ANNOTATIONS){
+    const k = bucketKey(a.date);
+    const i = buckets.findIndex(b => b.key === k);
+    if (i < 0) continue;
+    const x = cx(i).toFixed(1);
+    marks.push(`<line class="ann" x1="${x}" x2="${x}" y1="${T}" y2="${T+ih}"/>
+      <text class="annlabel" x="${x}" y="${T-3}" text-anchor="middle">${notes.length+1}</text>`);
+    notes.push(`<b>${notes.length+1}</b> ${a.date} — ${a.label}`);
+  }
+  $("chartNotes").innerHTML = notes.join(" &nbsp;·&nbsp; ");
+
   host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img"
-    aria-label="${m.label} by ${grain}">${grid.join("")}${series}${xlabels}</svg>`;
+    aria-label="${m.label} by ${grain}">${grid.join("")}${series}${marks.join("")}${xlabels}</svg>`;
 }
 function shortNum(v){
   const a = Math.abs(v);
@@ -533,7 +805,8 @@ function renderAll(){
   $("rangeLabel").textContent = `${$("from").value} → ${$("to").value} · ${
     {day:"daily",week:"weekly",month:"monthly",year:"yearly"}[grain]}` +
     (channel === "all" ? "" : ` · social filtered to ${channel}`);
-  renderCards(); renderChart();
+  renderHeadline(); renderCoverage(); renderCards();
+  renderChannelTable(); renderFlags(); renderChart();
 }
 
 /* ---------- controls ---------- */
@@ -602,14 +875,37 @@ function showMessage(title, body){
   }
 
   RAW = live.slice().sort((a,b)=> a.date < b.date ? -1 : 1);
+  KEY_EVENTS = RAW.some(r => (r.conversions ?? 0) > 0);
+
+  /* An ongoing blackout, not merely a quiet week: the last day with any
+     sessions, if that was more than a week before the end of the data. */
+  const lastWeb = [...RAW].reverse().find(r => (r.sessions ?? 0) > 0)?.date;
+  WEB_GAP = (lastWeb && (parse(RAW.at(-1).date) - parse(lastWeb)) / 864e5 > 7)
+    ? shift(lastWeb, 1) : null;
+
+  /* Optional. A missing annotations.json just means no event markers. */
+  try {
+    const r = await fetch("./annotations.json", {cache:"no-store"});
+    if (r.ok){
+      const a = await r.json();
+      if (Array.isArray(a)) ANNOTATIONS = a.filter(x => x && x.date).sort((x,y)=> x.date < y.date ? -1 : 1);
+    }
+  } catch (e){}
+
   project();
   const last = ROWS[ROWS.length-1].date;
 
   $("from").min = $("to").min = ROWS[0].date;
   $("from").max = $("to").max = last;
+  /* Default to the last quarter, not the last year. A 90-day window has a
+     prior period the data actually covers, so the change figures mean
+     something on first load — and a quarter is the period an executive team
+     reviews anyway. */
   $("to").value = last;
-  const start = shift(last, -364);
+  const start = shift(last, -89);
   $("from").value = start < ROWS[0].date ? ROWS[0].date : start;
+  for (const b of $("presetSeg").children)
+    b.setAttribute("aria-pressed", b.dataset.preset === "90");
 
   // Flag stale data rather than presenting it as current. The job drifts by
   // design, so allow two days before saying anything.
@@ -617,7 +913,7 @@ function showMessage(title, body){
   $("foot").innerHTML = `${ROWS.length.toLocaleString()} days · ${ROWS[0].date} to ${last}` +
     (behind > 2 ? ` · <span class="stale">last refresh was ${behind} days ago</span>` : "");
 
-  renderChips(); renderAll();
+  renderChips(); renderMethod(); renderAll();
 })();
 </script>
 </body>
