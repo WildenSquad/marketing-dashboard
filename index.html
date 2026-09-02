@@ -117,6 +117,8 @@
 
   .coverage{font-size:11.5px; color:var(--muted); margin:0 0 22px; line-height:1.6}
   .coverage b{font-weight:500; color:var(--text)}
+  .periodline{font-size:12.5px; color:var(--muted); margin:0 0 14px; line-height:1.6}
+  .periodline b{color:var(--text); font-weight:600}
 
   /* per-source warning banner, e.g. the analytics gap */
   .flag{border:1px solid var(--line-strong); border-left:3px solid var(--down);
@@ -191,6 +193,8 @@
       <button type="button" data-preset="all">All</button>
     </div>
   </div>
+
+  <p class="periodline" id="periodLine"></p>
 
   <div class="headline" id="headline"></div>
 
@@ -335,7 +339,7 @@ let WEB_GAP = null;
 function unavailable(key){
   const m = METRICS[key];
   if (key === "conversion" && !KEY_EVENTS) return {value:"Not configured", note:m.na};
-  if (m.group === "web" && WEB_GAP && $("from").value >= WEB_GAP)
+  if (m.group === "web" && WEB_GAP && activePeriod().from >= WEB_GAP)
     return {value:"—", note:`No analytics recorded from ${WEB_GAP} onward — see the note above.`};
   return null;
 }
@@ -356,6 +360,14 @@ const num = v => v==null ? 0 : v;
    east of UTC, which silently misfiles rows into the wrong week or month. */
 const parse = s => new Date(s + "T00:00:00Z");
 const iso = d => d.toISOString().slice(0,10);
+
+/* Today in the viewer's own calendar, built from local parts rather than
+   toISOString() — which would report tomorrow for anyone east of UTC after
+   their evening. END_DATE is today, or the last day of data if that is
+   somehow later. */
+const TODAY = (() => { const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; })();
+let END_DATE = TODAY;
 const shift = (s, days) => { const d = parse(s); d.setUTCDate(d.getUTCDate()+days); return iso(d); };
 
 /* Sum one metric's field(s) from a bucket or row. */
@@ -494,20 +506,128 @@ const fmtVal = (n,key) => {
 };
 
 /* ---------- render ---------- */
+/* Rows across the whole date range. The chart plots these, bucketed by the
+   grain; everything else reports on one period at a time. */
 function selectedRows(){
   const a = $("from").value, b = $("to").value;
   return ROWS.filter(r => r.date >= a && r.date <= b);
+}
+
+/* ---------- reporting period ----------
+   The grain toggle sets the reporting period for the whole page, not just
+   the chart's x-axis: Daily reports on the latest day, Monthly on the latest
+   month, and so on. The date range bounds which periods exist and what the
+   chart draws; the grain decides which single period the figures describe. */
+
+const startOfBucket = (d) => {
+  if (grain === "day")   return d;
+  if (grain === "year")  return d.slice(0,4) + "-01-01";
+  if (grain === "month") return d.slice(0,7) + "-01";
+  const x = parse(d); x.setUTCDate(x.getUTCDate() - ((x.getUTCDay()+6) % 7)); return iso(x);
+};
+const endOfBucket = (start) => {
+  const x = parse(start);
+  if (grain === "day")  return start;
+  if (grain === "week") { x.setUTCDate(x.getUTCDate()+6); return iso(x); }
+  if (grain === "month"){ x.setUTCMonth(x.getUTCMonth()+1); x.setUTCDate(0); return iso(x); }
+  x.setUTCFullYear(x.getUTCFullYear()+1); x.setUTCDate(x.getUTCDate()-1); return iso(x);
+};
+const startOfPrevBucket = (start) => {
+  const x = parse(start);
+  if (grain === "day")        x.setUTCDate(x.getUTCDate()-1);
+  else if (grain === "week")  x.setUTCDate(x.getUTCDate()-7);
+  else if (grain === "month") x.setUTCMonth(x.getUTCMonth()-1);
+  else                        x.setUTCFullYear(x.getUTCFullYear()-1);
+  return iso(x);
+};
+
+function activePeriod(){
+  const rangeStart = $("from").value, rangeEnd = $("to").value;
+  const lastData = RAW.length ? RAW[RAW.length-1].date : rangeEnd;
+
+  /* Anchor on the most recent day that actually recorded something, not on
+     the range end. Today's row exists from the moment the nightly job runs,
+     but it is close to empty by construction: the job runs early, GA4 lags a
+     day or two, and posts accrue metrics over the following 24h. Anchoring on
+     the range end would make Daily report a row of zeros every morning.
+     Follower levels are excluded from the test — they are written every day
+     regardless, so they would mark every day as active. */
+  const active = (r) => (r.posts ?? 0) > 0 || (r.sessions ?? 0) > 0 ||
+                        (r.pageviews ?? 0) > 0 || (r.emails_delivered ?? 0) > 0;
+  const inRange = (d) => d >= rangeStart && d <= rangeEnd;
+  const lastActive = [...RAW].reverse().find(r => inRange(r.date) && active(r))?.date;
+  const anchor = lastActive
+    ?? (inRange(lastData) ? lastData : rangeEnd);
+
+  const bStart = startOfBucket(anchor);
+  const bEnd = endOfBucket(bStart);
+  const from = bStart < rangeStart ? rangeStart : bStart;   // never escape the range
+
+  /* End at the earliest of: the period's own end, the range end, and the last
+     day data reaches. Without that last clamp, August would report as running
+     to the 31st while holding 17 days of numbers, and the comparison against
+     a complete July would read as a 45% collapse every single month. */
+  let to = rangeEnd < bEnd ? rangeEnd : bEnd;
+  if (lastData < to && lastData >= from) to = lastData;
+
+  const clamped = bStart < rangeStart;
+  const partial = to < bEnd;
+  const elapsed = Math.round((parse(to) - parse(from)) / 864e5) + 1;
+
+  /* Like-for-like: an incomplete period is compared against the same span,
+     at the same offset, of the previous one. */
+  const pb = startOfPrevBucket(bStart);
+  const offset = Math.round((parse(from) - parse(bStart)) / 864e5);
+  const prevFrom = shift(pb, offset);
+  const prevTo = (partial || clamped) ? shift(prevFrom, elapsed-1) : endOfBucket(pb);
+  return {from, to, prevFrom, prevTo, bStart, bEnd, partial, clamped, elapsed};
+}
+
+function periodRows(){
+  const p = activePeriod();
+  return ROWS.filter(r => r.date >= p.from && r.date <= p.to);
 }
 /* The immediately preceding period of equal length — but only if the data
    actually covers it. Comparing a full year against the three weeks of
    history that precede it produced "+12,736%", which is arithmetic rather
    than information. A partial baseline is worse than none, so refuse it. */
 function priorRows(){
-  const a = $("from").value, b = $("to").value;
-  const days = Math.round((parse(b) - parse(a)) / 864e5) + 1;
-  const pb = shift(a, -1), pa = shift(pb, -(days-1));
-  if (!RAW.length || pa < RAW[0].date) return [];
-  return ROWS.filter(r => r.date >= pa && r.date <= pb);
+  const p = activePeriod();
+  if (!RAW.length || p.prevFrom < RAW[0].date) return [];
+  return ROWS.filter(r => r.date >= p.prevFrom && r.date <= p.prevTo);
+}
+
+/* Human label for the period being reported on. */
+function periodLabel(){
+  const p = activePeriod();
+  const d = parse(p.bStart);
+  const fmt = (o) => d.toLocaleDateString(undefined, {...o, timeZone:"UTC"});
+  if (grain === "day")   return fmt({day:"numeric", month:"short", year:"numeric"});
+  if (grain === "week")  return "week of " + fmt({day:"numeric", month:"short", year:"numeric"});
+  if (grain === "month") return fmt({month:"long", year:"numeric"});
+  return p.bStart.slice(0,4);
+}
+function renderPeriodLine(){
+  const p = activePeriod();
+  const days = (n) => `${n} day${n===1?"":"s"}`;
+  const qualifier =
+    p.clamped ? ` — trimmed to the selected date range, ${days(p.elapsed)}` :
+    p.partial ? ` — ${days(p.elapsed)} so far` : "";
+  const compare = priorRows().length === 0
+    ? "No comparable earlier period in the data."
+    : `Compared with ${p.prevFrom} to ${p.prevTo}${(p.partial || p.clamped) ? ", the same span of the previous period" : ""}.`;
+  /* The newest day or two are provisional: Buffer refreshes post metrics once
+     daily and GA4 finalises a day later still, so a post published yesterday
+     can legitimately show zero views. Without this, Daily reads "-100%" every
+     morning and looks like a collapse. */
+  const lastData = RAW.length ? RAW[RAW.length-1].date : p.to;
+  const fresh = Math.round((parse(lastData) - parse(p.to)) / 864e5) <= 1;
+  const provisional = fresh
+    ? " Figures for the most recent day or two are provisional — Buffer refreshes post metrics once daily and GA4 finalises about a day later."
+    : "";
+  $("periodLine").innerHTML =
+    `<b>Reporting on ${periodLabel()}${qualifier}</b> (${p.from} to ${p.to}). ${compare}
+     The chart below covers the full ${$("from").value} to ${$("to").value} range.${provisional}`;
 }
 function deltaHTML(cur, prev, key){
   if (cur == null || prev == null) return `<span>no comparable prior period</span>`;
@@ -536,7 +656,7 @@ function growthHTML(rows, key){
   return `<b class="${cls}">${g >= 0 ? "+" : "−"}${fmtInt(Math.abs(g))}</b> over this range`;
 }
 function renderCards(){
-  const cur = selectedRows(), prev = priorRows();
+  const cur = periodRows(), prev = priorRows();
   const box = {social:$("cards-social"), web:$("cards-web"), email:$("cards-email")};
   Object.values(box).forEach(el => el.innerHTML = "");
   for (const [key,m] of Object.entries(METRICS)){
@@ -577,7 +697,7 @@ function renderCards(){
 const HEADLINE = ["views", "engagements", "subscribers", "sessions"];
 
 function renderHeadline(){
-  const cur = selectedRows(), prev = priorRows();
+  const cur = periodRows(), prev = priorRows();
   const host = $("headline"); host.innerHTML = "";
   for (const key of HEADLINE){
     const m = METRICS[key];
@@ -601,7 +721,7 @@ function renderHeadline(){
    days" therefore means something different in each section, and an
    executive comparing them deserves to be told so. */
 function renderCoverage(){
-  const rows = selectedRows();
+  const rows = periodRows();
   const days = (test) => rows.filter(test).length;
   const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
   const parts = [
@@ -623,7 +743,8 @@ const CH_LABEL = {instagram:"Instagram", linkedin:"LinkedIn", facebook:"Facebook
 const CH_FOLLOWER = CHANNEL_FOLLOWERS;
 
 function renderChannelTable(){
-  const rows = RAW.filter(r => r.date >= $("from").value && r.date <= $("to").value);
+  const p = activePeriod();
+  const rows = RAW.filter(r => r.date >= p.from && r.date <= p.to);
   const sum = (ch, f) => rows.reduce((a,r) => a + (r.by_channel?.[ch]?.[f] ?? 0), 0);
   const cell = (v, ok=true) => ok ? fmtInt(v) : `<span class="dim">—</span>`;
 
@@ -682,7 +803,7 @@ function renderFlags(){
       ${ann || "Zeros after this date are missing measurement, not lost traffic."}</div>`;
   }
 
-  const sends = selectedRows().filter(r => (r.emails_delivered ?? 0) > 0);
+  const sends = periodRows().filter(r => (r.emails_delivered ?? 0) > 0);
   const lastSend = sends.at(-1)?.date;
   email.innerHTML = `<div class="flag softflag">${
     sends.length === 0
@@ -802,10 +923,10 @@ function shortNum(v){
   return Math.round(v).toLocaleString();
 }
 function renderAll(){
-  $("rangeLabel").textContent = `${$("from").value} → ${$("to").value} · ${
+  $("rangeLabel").textContent = `${periodLabel()} · ${
     {day:"daily",week:"weekly",month:"monthly",year:"yearly"}[grain]}` +
     (channel === "all" ? "" : ` · social filtered to ${channel}`);
-  renderHeadline(); renderCoverage(); renderCards();
+  renderPeriodLine(); renderHeadline(); renderCoverage(); renderCards();
   renderChannelTable(); renderFlags(); renderChart();
 }
 
@@ -819,13 +940,14 @@ $("grainSeg").addEventListener("click", e => {
 $("presetSeg").addEventListener("click", e => {
   const b = e.target.closest("button"); if(!b) return;
   [...$("presetSeg").children].forEach(x => x.setAttribute("aria-pressed", x===b));
-  const last = ROWS[ROWS.length-1].date;
+  /* Presets always run up to today, not to the last day the data happens to
+     reach — "last 30 days" means the last 30 days. */
   if (b.dataset.preset === "all"){ $("from").value = ROWS[0].date; }
   else {
-    const start = shift(last, -(+b.dataset.preset - 1));
+    const start = shift(END_DATE, -(+b.dataset.preset - 1));
     $("from").value = start < ROWS[0].date ? ROWS[0].date : start;
   }
-  $("to").value = last;
+  $("to").value = END_DATE;
   renderAll();
 });
 ["from","to"].forEach(id => $(id).addEventListener("change", () => {
@@ -895,14 +1017,22 @@ function showMessage(title, body){
   project();
   const last = ROWS[ROWS.length-1].date;
 
+  /* The range ends YESTERDAY, not today. Today is always thin by
+     construction: the nightly job runs early, Buffer refreshes post metrics
+     once a day, and GA4 finalises later still — so today's row exists but is
+     mostly zeros. Ending on the last complete day avoids opening the report
+     on a column of nothing. Today remains selectable by hand. */
+  END_DATE = shift(TODAY, -1);
   $("from").min = $("to").min = ROWS[0].date;
-  $("from").max = $("to").max = last;
+  $("from").max = $("to").max = TODAY > last ? TODAY : last;
+
   /* Default to the last quarter, not the last year. A 90-day window has a
      prior period the data actually covers, so the change figures mean
      something on first load — and a quarter is the period an executive team
-     reviews anyway. */
-  $("to").value = last;
-  const start = shift(last, -89);
+     reviews anyway. Only a manual edit or a preset moves the start date
+     after this; changing the grain never does. */
+  $("to").value = END_DATE;
+  const start = shift(END_DATE, -89);
   $("from").value = start < ROWS[0].date ? ROWS[0].date : start;
   for (const b of $("presetSeg").children)
     b.setAttribute("aria-pressed", b.dataset.preset === "90");
