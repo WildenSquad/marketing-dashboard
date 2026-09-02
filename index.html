@@ -45,6 +45,10 @@
     box-shadow:0 1px 2px rgba(15,15,15,.12)}
   html[data-theme="dark"] .seg button[aria-pressed="true"]{box-shadow:0 0 0 1px var(--line-strong)}
   .seg button:focus-visible{outline:2px solid var(--s1); outline-offset:1px}
+  /* A custom date range overrides the period buttons; dim them so it is
+     obvious the figures describe a range rather than one of these. */
+  .seg.inactive button{opacity:.4}
+  .seg.inactive button[aria-pressed="true"]{background:transparent; box-shadow:none; font-weight:400}
 
   .dates{display:flex; align-items:center; gap:6px; font-size:13px; color:var(--muted)}
   input[type=date]{
@@ -175,7 +179,7 @@
   </header>
 
   <div class="controls">
-    <div class="seg" id="grainSeg" role="group" aria-label="Aggregation">
+    <div class="seg" id="grainSeg" role="group" aria-label="Reporting period">
       <button type="button" data-grain="day">Daily</button>
       <button type="button" data-grain="week">Weekly</button>
       <button type="button" data-grain="month" aria-pressed="true">Monthly</button>
@@ -185,12 +189,7 @@
       <input type="date" id="from" aria-label="Start date">
       <span>to</span>
       <input type="date" id="to" aria-label="End date">
-    </div>
-    <div class="seg" id="presetSeg" role="group" aria-label="Quick ranges">
-      <button type="button" data-preset="30">30d</button>
-      <button type="button" data-preset="90">90d</button>
-      <button type="button" data-preset="365">12mo</button>
-      <button type="button" data-preset="all">All</button>
+      <button class="ghost" id="clearCustom" type="button" hidden>Back to periods</button>
     </div>
   </div>
 
@@ -325,6 +324,18 @@ const METRICS = {
    Everything downstream reads ROWS, so filtering is a single projection
    rather than a condition threaded through every calculation. */
 let RAW = [], ROWS = [], grain = "month", metric = "views", channel = "all";
+
+/* Two ways to choose what is reported:
+   "period" — a Daily/Weekly/Monthly/Yearly button sets the dates to that
+              calendar period, and the figures describe it.
+   "custom" — the dates were typed in, so the figures describe the whole
+              range and the period buttons are dimmed.                    */
+let mode = "period";
+
+/* How much history the chart shows around the reported period. The range
+   inputs mirror the period itself, so without this a Monthly view would
+   plot a single bar. */
+const CHART_PERIODS = {day:30, week:13, month:12, year:5};
 let ANNOTATIONS = [];
 /* Whether this GA4 property records key events at all. If it never has, the
    conversion rate is unmeasurable rather than zero. */
@@ -363,8 +374,8 @@ const iso = d => d.toISOString().slice(0,10);
 
 /* Today in the viewer's own calendar, built from local parts rather than
    toISOString() — which would report tomorrow for anyone east of UTC after
-   their evening. END_DATE is today, or the last day of data if that is
-   somehow later. */
+   their evening. END_DATE is two days back — the most recent date whose
+   numbers have settled across all the sources. */
 const TODAY = (() => { const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; })();
 let END_DATE = TODAY;
@@ -545,21 +556,16 @@ function activePeriod(){
   const rangeStart = $("from").value, rangeEnd = $("to").value;
   const lastData = RAW.length ? RAW[RAW.length-1].date : rangeEnd;
 
-  /* Anchor on the most recent day that actually recorded something, not on
-     the range end. Today's row exists from the moment the nightly job runs,
-     but it is close to empty by construction: the job runs early, GA4 lags a
-     day or two, and posts accrue metrics over the following 24h. Anchoring on
-     the range end would make Daily report a row of zeros every morning.
-     Follower levels are excluded from the test — they are written every day
-     regardless, so they would mark every day as active. */
-  const active = (r) => (r.posts ?? 0) > 0 || (r.sessions ?? 0) > 0 ||
-                        (r.pageviews ?? 0) > 0 || (r.emails_delivered ?? 0) > 0;
-  const inRange = (d) => d >= rangeStart && d <= rangeEnd;
-  const lastActive = [...RAW].reverse().find(r => inRange(r.date) && active(r))?.date;
-  const anchor = lastActive
-    ?? (inRange(lastData) ? lastData : rangeEnd);
+  /* A hand-entered range is reported whole, and compared with the equal
+     span immediately before it. The period buttons do not apply. */
+  if (mode === "custom"){
+    const elapsed = Math.round((parse(rangeEnd) - parse(rangeStart)) / 864e5) + 1;
+    const prevTo = shift(rangeStart, -1), prevFrom = shift(prevTo, -(elapsed-1));
+    return {from:rangeStart, to:rangeEnd, prevFrom, prevTo, bStart:rangeStart, bEnd:rangeEnd,
+            partial:false, clamped:false, elapsed, custom:true};
+  }
 
-  const bStart = startOfBucket(anchor);
+  const bStart = startOfBucket(rangeEnd);
   const bEnd = endOfBucket(bStart);
   const from = bStart < rangeStart ? rangeStart : bStart;   // never escape the range
 
@@ -587,6 +593,18 @@ function periodRows(){
   const p = activePeriod();
   return ROWS.filter(r => r.date >= p.from && r.date <= p.to);
 }
+
+/* The chart needs surrounding history to be worth drawing. In period mode
+   the date inputs mirror the reported period, so the chart deliberately
+   reaches further back than the range; in custom mode it plots the range. */
+function chartRows(){
+  const p = activePeriod();
+  if (p.custom) return selectedRows();
+  let s = p.bStart;
+  for (let i = 1; i < CHART_PERIODS[grain]; i++) s = startOfPrevBucket(s);
+  const from = s < RAW[0].date ? RAW[0].date : s;
+  return ROWS.filter(r => r.date >= from && r.date <= p.to);
+}
 /* The immediately preceding period of equal length — but only if the data
    actually covers it. Comparing a full year against the three weeks of
    history that precede it produced "+12,736%", which is arithmetic rather
@@ -600,6 +618,7 @@ function priorRows(){
 /* Human label for the period being reported on. */
 function periodLabel(){
   const p = activePeriod();
+  if (p.custom) return "a custom range";
   const d = parse(p.bStart);
   const fmt = (o) => d.toLocaleDateString(undefined, {...o, timeZone:"UTC"});
   if (grain === "day")   return fmt({day:"numeric", month:"short", year:"numeric"});
@@ -611,11 +630,14 @@ function renderPeriodLine(){
   const p = activePeriod();
   const days = (n) => `${n} day${n===1?"":"s"}`;
   const qualifier =
+    p.custom  ? `, ${days(p.elapsed)}` :
     p.clamped ? ` — trimmed to the selected date range, ${days(p.elapsed)}` :
     p.partial ? ` — ${days(p.elapsed)} so far` : "";
   const compare = priorRows().length === 0
     ? "No comparable earlier period in the data."
-    : `Compared with ${p.prevFrom} to ${p.prevTo}${(p.partial || p.clamped) ? ", the same span of the previous period" : ""}.`;
+    : p.custom
+      ? `Compared with the ${days(p.elapsed)} immediately before it (${p.prevFrom} to ${p.prevTo}).`
+      : `Compared with ${p.prevFrom} to ${p.prevTo}${(p.partial || p.clamped) ? ", the same span of the previous period" : ""}.`;
   /* The newest day or two are provisional: Buffer refreshes post metrics once
      daily and GA4 finalises a day later still, so a post published yesterday
      can legitimately show zero views. Without this, Daily reads "-100%" every
@@ -625,9 +647,13 @@ function renderPeriodLine(){
   const provisional = fresh
     ? " Figures for the most recent day or two are provisional — Buffer refreshes post metrics once daily and GA4 finalises about a day later."
     : "";
+  const chartNote = p.custom
+    ? " The period buttons are inactive while a custom range is set."
+    : ` The chart below shows the last ${CHART_PERIODS[grain]} ${
+        {day:"days", week:"weeks", month:"months", year:"years"}[grain]} for context.`;
+
   $("periodLine").innerHTML =
-    `<b>Reporting on ${periodLabel()}${qualifier}</b> (${p.from} to ${p.to}). ${compare}
-     The chart below covers the full ${$("from").value} to ${$("to").value} range.${provisional}`;
+    `<b>Reporting on ${periodLabel()}${qualifier}</b> (${p.from} to ${p.to}). ${compare}${chartNote}${provisional}`;
 }
 function deltaHTML(cur, prev, key){
   if (cur == null || prev == null) return `<span>no comparable prior period</span>`;
@@ -839,7 +865,7 @@ function renderChips(){
   }
 }
 function renderChart(){
-  const rows = selectedRows(), host = $("chart");
+  const rows = chartRows(), host = $("chart");
   const buckets = aggregate(rows);
   $("chartNotes").innerHTML = "";
   if (!buckets.length){ host.innerHTML = `<div class="empty">No data in this range. Widen the dates.</div>`; return; }
@@ -931,27 +957,58 @@ function renderAll(){
 }
 
 /* ---------- controls ---------- */
+/* Picking a period sets the dates to that period, so the range shown always
+   matches the figures below it. */
+function applyPeriod(g){
+  grain = g;
+  mode = "period";
+
+  let bStart = startOfBucket(END_DATE);
+  let bEnd = endOfBucket(bStart);
+
+  /* If the current period has barely started, report the last complete one
+     instead. Clicking Weekly on a Monday would otherwise show a one-day
+     week, and Monthly on the 2nd a two-day month — both technically correct
+     and useless. Past the halfway mark, period-to-date is the more useful
+     answer and the line above the cards says it is partial. */
+  const elapsed = Math.round((parse(END_DATE) - parse(bStart)) / 864e5) + 1;
+  const total = Math.round((parse(bEnd) - parse(bStart)) / 864e5) + 1;
+  const prevStart = startOfPrevBucket(bStart);
+  if (elapsed / total < 0.5 && prevStart >= ROWS[0].date){
+    bStart = prevStart;
+    bEnd = endOfBucket(bStart);
+  }
+
+  $("from").value = bStart < ROWS[0].date ? ROWS[0].date : bStart;
+  $("to").value = bEnd < END_DATE ? bEnd : END_DATE;
+  for (const x of $("grainSeg").children)
+    x.setAttribute("aria-pressed", x.dataset.grain === g);
+  $("grainSeg").classList.remove("inactive");
+  $("clearCustom").hidden = true;
+}
+
+/* A hand-entered range has no natural bucket size, so pick one that keeps
+   the chart readable rather than plotting 400 daily bars. */
+function autoGrain(){
+  const days = Math.round((parse($("to").value) - parse($("from").value)) / 864e5) + 1;
+  return days <= 45 ? "day" : days <= 210 ? "week" : days <= 1200 ? "month" : "year";
+}
+
 $("grainSeg").addEventListener("click", e => {
   const b = e.target.closest("button"); if(!b) return;
-  grain = b.dataset.grain;
-  [...$("grainSeg").children].forEach(x => x.setAttribute("aria-pressed", x===b));
+  applyPeriod(b.dataset.grain);
   renderAll();
 });
-$("presetSeg").addEventListener("click", e => {
-  const b = e.target.closest("button"); if(!b) return;
-  [...$("presetSeg").children].forEach(x => x.setAttribute("aria-pressed", x===b));
-  /* Presets always run up to today, not to the last day the data happens to
-     reach — "last 30 days" means the last 30 days. */
-  if (b.dataset.preset === "all"){ $("from").value = ROWS[0].date; }
-  else {
-    const start = shift(END_DATE, -(+b.dataset.preset - 1));
-    $("from").value = start < ROWS[0].date ? ROWS[0].date : start;
-  }
-  $("to").value = END_DATE;
-  renderAll();
-});
+$("clearCustom").addEventListener("click", () => { applyPeriod(grain); renderAll(); });
 ["from","to"].forEach(id => $(id).addEventListener("change", () => {
-  [...$("presetSeg").children].forEach(x => x.setAttribute("aria-pressed","false"));
+  if ($("from").value > $("to").value){          // keep the range the right way round
+    if (id === "from") $("to").value = $("from").value;
+    else $("from").value = $("to").value;
+  }
+  mode = "custom";
+  grain = autoGrain();
+  $("grainSeg").classList.add("inactive");
+  $("clearCustom").hidden = false;
   renderAll();
 }));
 $("channelSeg").addEventListener("click", e => {
@@ -1017,25 +1074,16 @@ function showMessage(title, body){
   project();
   const last = ROWS[ROWS.length-1].date;
 
-  /* The range ends YESTERDAY, not today. Today is always thin by
+  /* Reporting stops two days back. Today and yesterday are both thin by
      construction: the nightly job runs early, Buffer refreshes post metrics
-     once a day, and GA4 finalises later still — so today's row exists but is
-     mostly zeros. Ending on the last complete day avoids opening the report
-     on a column of nothing. Today remains selectable by hand. */
-  END_DATE = shift(TODAY, -1);
+     on roughly a 24h cycle, and GA4 finalises a day behind that. Two days
+     back is the most recent date whose numbers are actually settled. Both
+     newer days remain selectable by hand. */
+  END_DATE = shift(TODAY, -2);
   $("from").min = $("to").min = ROWS[0].date;
   $("from").max = $("to").max = TODAY > last ? TODAY : last;
 
-  /* Default to the last quarter, not the last year. A 90-day window has a
-     prior period the data actually covers, so the change figures mean
-     something on first load — and a quarter is the period an executive team
-     reviews anyway. Only a manual edit or a preset moves the start date
-     after this; changing the grain never does. */
-  $("to").value = END_DATE;
-  const start = shift(END_DATE, -89);
-  $("from").value = start < ROWS[0].date ? ROWS[0].date : start;
-  for (const b of $("presetSeg").children)
-    b.setAttribute("aria-pressed", b.dataset.preset === "90");
+  applyPeriod("month");
 
   // Flag stale data rather than presenting it as current. The job drifts by
   // design, so allow two days before saying anything.
